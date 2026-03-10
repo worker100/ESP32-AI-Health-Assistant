@@ -28,11 +28,10 @@ constexpr uint32_t kTempReadMs = 1000;
 constexpr uint32_t kMlxRetryMs = 5000;
 constexpr uint32_t kBeatTimeoutMs = 12000;
 constexpr uint32_t kCalibrationDurationMs = 3000;
-constexpr uint32_t kFingerLostDebounceMs = 2500;
+constexpr uint32_t kFingerLostDebounceMs = 1200;
 constexpr uint32_t kHrDisplayHoldMs = 8000;
-constexpr uint32_t kSpo2DisplayHoldMs = 25000;
+constexpr uint32_t kSpo2DisplayHoldMs = 15000;
 constexpr float kHrDisplayAlpha = 0.35f;
-constexpr float kSpo2DisplayAlpha = 0.20f;
 constexpr float kHrRealtimeMaxJump = 10.0f;
 constexpr float kMinAcceptedBpm = 45.0f;
 constexpr float kMaxAcceptedBpm = 140.0f;
@@ -45,16 +44,13 @@ constexpr float kHrAlgoFallbackAlpha = 0.22f;
 constexpr float kSpo2EwmaAlpha = 0.25f;
 constexpr uint8_t kMedianWindowSize = 5;
 constexpr float kMaxHrJumpPerUpdate = 20.0f;
-constexpr float kMaxSpo2RisePerUpdate = 2.2f;
-constexpr float kMaxSpo2DropPerUpdate = 0.9f;
+constexpr float kMaxSpo2JumpPerUpdate = 4.0f;
 constexpr float kMinPerfusionIndex = 0.0012f;
-constexpr float kMinPiRatioForSpo2 = 0.16f;
 constexpr uint8_t kValidStreakRequired = 1;
-constexpr uint8_t kInvalidStreakDrop = 16;
+constexpr uint8_t kInvalidStreakDrop = 8;
 constexpr float kMaxSpo2ReacquireJump = 4.0f;
 constexpr uint8_t kCalibrationMinWindows = 1;
 constexpr uint32_t kBeatRealtimeStaleMs = 2500;
-constexpr uint32_t kSpo2SignalTimeoutMs = 35000;
 constexpr long kFingerDetectThreshold = 50000;
 constexpr uint8_t kMpuAddr0 = 0x68;
 constexpr uint8_t kMpuAddr1 = 0x69;
@@ -117,20 +113,16 @@ Adafruit_MLX90614 mlx90614;
 struct VitalSigns {
   float heartRateBpm = 0.0f;
   float spo2Percent = 0.0f;
-  float spo2DisplayPercent = 0.0f;
   float heartRateDisplayBpm = 0.0f;
   float heartRateRealtimeBpm = 0.0f;
   bool heartRateValid = false;
   bool spo2Valid = false;
-  bool spo2DisplayValid = false;
   bool heartRateDisplayValid = false;
   bool heartRateRealtimeValid = false;
   bool fingerDetected = false;
   uint32_t lastHrUpdateMs = 0;
   uint32_t lastSpo2UpdateMs = 0;
   uint32_t lastHrBeatAcceptedMs = 0;
-  uint32_t lastHrDisplayRefreshMs = 0;
-  uint32_t lastSpo2DisplayRefreshMs = 0;
   uint32_t irValue = 0;
   uint32_t redValue = 0;
 };
@@ -238,17 +230,13 @@ void resetMeasurementFilters() {
   g_currentPerfusionIndex = 0.0f;
   g_vitals.heartRateBpm = 0.0f;
   g_vitals.spo2Percent = 0.0f;
-  g_vitals.spo2DisplayPercent = 0.0f;
   g_vitals.heartRateDisplayBpm = 0.0f;
   g_vitals.heartRateRealtimeBpm = 0.0f;
   g_vitals.heartRateValid = false;
   g_vitals.spo2Valid = false;
-  g_vitals.spo2DisplayValid = false;
   g_vitals.heartRateDisplayValid = false;
   g_vitals.heartRateRealtimeValid = false;
   g_vitals.lastHrBeatAcceptedMs = 0;
-  g_vitals.lastHrDisplayRefreshMs = 0;
-  g_vitals.lastSpo2DisplayRefreshMs = 0;
 }
 
 void startCalibration(uint32_t now) {
@@ -1045,8 +1033,6 @@ void updateSensor() {
       const float irAcP2P = static_cast<float>(irMax - irMin);
       const float perfusionIndex = (irDc > 0.0f) ? (irAcP2P / irDc) : 0.0f;
       g_currentPerfusionIndex = perfusionIndex;
-      const float baselinePi = std::max(g_calibratedPerfusionIndex, kMinPerfusionIndex);
-      const float piRatio = perfusionIndex / baselinePi;
       const bool signalQualityOk = perfusionIndex >= kMinPerfusionIndex;
 
       if (g_sensorState == SensorState::Calibrating) {
@@ -1092,29 +1078,24 @@ void updateSensor() {
             if (!g_vitals.heartRateDisplayValid) {
               g_vitals.heartRateDisplayBpm = algoBpm;
             } else {
-              g_vitals.heartRateDisplayBpm =
+            g_vitals.heartRateDisplayBpm =
                   (1.0f - kHrAlgoFallbackAlpha) * g_vitals.heartRateDisplayBpm +
                   kHrAlgoFallbackAlpha * algoBpm;
             }
             g_vitals.heartRateDisplayValid = true;
-            g_vitals.lastHrDisplayRefreshMs = now;
           }
         }
       }
 
-      const float minPiRatioForThisWindow =
-          g_vitals.spo2Valid ? (kMinPiRatioForSpo2 * 0.75f) : kMinPiRatioForSpo2;
       const bool spo2WindowAccepted =
-          signalQualityOk && piRatio >= minPiRatioForThisWindow && spo2Valid &&
-          spo2 >= kMinAcceptedSpo2 && spo2 <= kMaxAcceptedSpo2;
+          signalQualityOk && spo2Valid && spo2 >= kMinAcceptedSpo2 && spo2 <= kMaxAcceptedSpo2;
       if (spo2WindowAccepted) {
         const float spo2Median = pushAndMedian(
             static_cast<float>(spo2), g_spo2History, &g_spo2HistoryIndex, &g_spo2HistoryCount);
 
         bool jumpOk = true;
         if (g_vitals.spo2Percent > 0.0f) {
-          const float limit = g_vitals.spo2Valid ? (kMaxSpo2ReacquireJump + 1.5f)
-                                                 : (kMaxSpo2ReacquireJump + 3.0f);
+          const float limit = g_vitals.spo2Valid ? kMaxSpo2JumpPerUpdate : kMaxSpo2ReacquireJump;
           jumpOk = fabsf(spo2Median - g_vitals.spo2Percent) <= limit;
         }
 
@@ -1131,29 +1112,9 @@ void updateSensor() {
               g_vitals.lastSpo2UpdateMs = now;
             }
           } else {
-            float deltaSpo2 = spo2Median - g_vitals.spo2Percent;
-            if (deltaSpo2 > kMaxSpo2RisePerUpdate) {
-              deltaSpo2 = kMaxSpo2RisePerUpdate;
-            }
-            if (deltaSpo2 < -kMaxSpo2DropPerUpdate) {
-              deltaSpo2 = -kMaxSpo2DropPerUpdate;
-            }
-            const float limitedTarget = g_vitals.spo2Percent + deltaSpo2;
             g_vitals.spo2Percent =
-                (1.0f - kSpo2EwmaAlpha) * g_vitals.spo2Percent + kSpo2EwmaAlpha * limitedTarget;
+                (1.0f - kSpo2EwmaAlpha) * g_vitals.spo2Percent + kSpo2EwmaAlpha * spo2Median;
             g_vitals.lastSpo2UpdateMs = now;
-          }
-
-          if (g_vitals.spo2Valid) {
-            if (!g_vitals.spo2DisplayValid) {
-              g_vitals.spo2DisplayPercent = g_vitals.spo2Percent;
-            } else {
-              g_vitals.spo2DisplayPercent =
-                  (1.0f - kSpo2DisplayAlpha) * g_vitals.spo2DisplayPercent +
-                  kSpo2DisplayAlpha * g_vitals.spo2Percent;
-            }
-            g_vitals.spo2DisplayValid = true;
-            g_vitals.lastSpo2DisplayRefreshMs = now;
           }
         } else {
           g_spo2ValidStreak = 0;
@@ -1225,7 +1186,6 @@ void updateSensor() {
             }
             g_vitals.heartRateDisplayValid = true;
             g_vitals.lastHrBeatAcceptedMs = now;
-            g_vitals.lastHrDisplayRefreshMs = now;
           } else {
             g_hrValidStreak = 0;
             if (g_hrInvalidStreak < 255) {
@@ -1244,21 +1204,15 @@ void updateSensor() {
   }
 
   if (g_vitals.fingerDetected && g_vitals.heartRateDisplayValid &&
-      (millis() - g_vitals.lastHrDisplayRefreshMs) > kHrDisplayHoldMs) {
+      (millis() - g_vitals.lastHrBeatAcceptedMs) > kHrDisplayHoldMs) {
     g_vitals.heartRateDisplayValid = false;
     g_vitals.heartRateRealtimeValid = false;
     g_vitals.heartRateDisplayBpm = 0.0f;
     g_vitals.heartRateRealtimeBpm = 0.0f;
   }
 
-  if (g_vitals.fingerDetected && g_vitals.spo2DisplayValid &&
-      (millis() - g_vitals.lastSpo2DisplayRefreshMs) > kSpo2DisplayHoldMs) {
-    g_vitals.spo2DisplayValid = false;
-    g_vitals.spo2DisplayPercent = 0.0f;
-  }
-
   if (g_vitals.fingerDetected && g_vitals.spo2Valid &&
-      (millis() - g_vitals.lastSpo2UpdateMs) > kSpo2SignalTimeoutMs) {
+      (millis() - g_vitals.lastSpo2UpdateMs) > kBeatTimeoutMs) {
     g_vitals.spo2Valid = false;
     g_vitals.spo2Percent = 0.0f;
   }
@@ -1288,8 +1242,8 @@ void renderUi() {
   }
 
   display.setCursor(70, 10);
-  if (g_vitals.spo2DisplayValid) {
-    display.print(static_cast<int>(lroundf(g_vitals.spo2DisplayPercent)));
+  if (g_vitals.spo2Valid) {
+    display.print(static_cast<int>(lroundf(g_vitals.spo2Percent)));
     display.setTextSize(1);
     display.print("%");
     display.setTextSize(2);
@@ -1333,8 +1287,8 @@ void renderUi() {
     Serial.print("--");
   }
   Serial.print(" O2=");
-  if (g_vitals.spo2DisplayValid) {
-    Serial.print(g_vitals.spo2DisplayPercent, 1);
+  if (g_vitals.spo2Valid) {
+    Serial.print(g_vitals.spo2Percent, 1);
     Serial.print("%");
   } else {
     Serial.print("--%");

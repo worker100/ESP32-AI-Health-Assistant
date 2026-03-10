@@ -364,3 +364,23 @@
   - 新增 `kSpo2DisplayHoldMs = 15000`（减少 `SpO2` 短时掉 `--`）
 - 喇叭测试补充：
   - `max98357_speaker_test.cpp` 已增加低音量“悄悄话”参数用于连线确认（`amplitude=0.03`）
+
+## 24. 2026-03-10 心率血氧策略回退（Rollback to Fast Realtime Profile）
+- 背景：
+  - 在后续“平滑/门控强化”版本中，出现了 `HR` 可显示但 `SpO2` 长时间 `--` 的现象。
+  - 用户实测反馈该版本观感不如前一版，且出现 `HR` 偶发偏高（如 `100+`）的问题。
+- 本次主线决策：
+  - 回退到“更快实时出值”版本作为当前主线，优先保证演示稳定与连续出值。
+- 回退后保留的关键改动：
+  - `kCalibrationDurationMs = 3000`
+  - `kAlgoStepSamples = 25`
+  - `kCalibrationMinWindows = 1`
+  - 校准结束后不清空测量窗口（避免首个有效值延后）
+  - 保留 `algoHeartRate` 回退通道（逐拍暂不新鲜时用于维持 `HR`）
+- 回退后移除的后续增强项：
+  - `SpO2` 额外显示通道（`spo2DisplayPercent`）
+  - 基于 `piRatio` 的额外门控与自适应阈值
+  - `SpO2` 非对称涨跌限幅/超长超时等“强化平滑”策略
+- 当前编译状态：
+  - `python -m platformio run -e esp32-s3-devkitc-1`
+  - 结果：通过

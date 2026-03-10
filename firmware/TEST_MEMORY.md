@@ -167,3 +167,15 @@
     - 温度显示（当前默认 `MAX30102 die temperature`）
     - 跌倒检测
     - 本地声音报警
+
+## 12. 2026-03-10 心率血氧参数回退记录（Fast Realtime Profile Restored）
+- 背景：
+  - 后续强化平滑版本在部分实测中出现 `SpO2` 长时间 `--`，且 `HR` 观感不稳定。
+- 当前回退到的测试友好参数：
+  - `kCalibrationDurationMs = 3000`
+  - `kAlgoStepSamples = 25`
+  - `kCalibrationMinWindows = 1`
+  - 保留 `algoHeartRate` 回退通道（减少 `HR=--`）
+  - 保持 `kSpo2DisplayHoldMs = 15000`、`kInvalidStreakDrop = 8` 的此前配置
+- 本次回退的目的：
+  - 优先恢复“更快出值 + 可演示”的体验，再做小步参数微调。
