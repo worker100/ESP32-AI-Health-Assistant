@@ -1,0 +1,7 @@
+# PlatformIO build artifacts
+firmware/.pio/
+firmware/.vscode/
+
+# OS
+Thumbs.db
+.DS_Store
