@@ -197,3 +197,22 @@
   - 新增 `lastHrDisplayRefreshMs` 作为 HR 显示保持时间基准
 - 当前结论：
   - 该版属于“低风险小步优化”，优先改显示连续性与异常尖峰，未引入大算法重构。
+
+## 14. 2026-03-10 O2 专项重构记录（Only SpO2 Path Refactor）
+- 触发原因：
+  - 实测中 `O2=--%` 长时间不恢复，且用户要求“仅改 O2 代码”。
+- 实现方案（本次）：
+  - 重构 `SpO2` 更新为“双通道候选”：
+    - 主通道：Maxim 原算法 `spo2Valid` 输出
+    - 回退通道：窗口 `AC/DC ratio` 估算（`-45.060*r^2 + 30.354*r + 94.845`）
+  - 主通道失效时自动启用回退通道，减少长期无值。
+  - 为回退通道增加最低信号门槛（`IR/RED DC` 与 `AC P2P`）避免噪声误判。
+  - 放宽血氧链路门控参数，降低 `--%` 闪断概率。
+- 本次 O2 相关参数：
+  - `kMinAcceptedSpo2 = 85`
+  - `kMaxSpo2JumpPerUpdate = 5.5`
+  - `kMaxSpo2ReacquireJump = 7.0`
+  - `kInvalidStreakDrop = 20`
+  - `kMaxSpo2FallbackJumpPerUpdate = 3.2`
+- 备注：
+  - 该改动以“演示可持续出值”为优先目标，非医疗级标定实现。

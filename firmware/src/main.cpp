@@ -35,7 +35,7 @@ constexpr float kHrDisplayAlpha = 0.35f;
 constexpr float kHrRealtimeMaxJump = 10.0f;
 constexpr float kMinAcceptedBpm = 45.0f;
 constexpr float kMaxAcceptedBpm = 125.0f;
-constexpr int32_t kMinAcceptedSpo2 = 90;
+constexpr int32_t kMinAcceptedSpo2 = 85;
 constexpr int32_t kMaxAcceptedSpo2 = 100;
 constexpr size_t kAlgoWindowSize = 100;
 constexpr size_t kAlgoStepSamples = 25;
@@ -44,17 +44,28 @@ constexpr float kHrAlgoFallbackAlpha = 0.22f;
 constexpr float kSpo2EwmaAlpha = 0.25f;
 constexpr uint8_t kMedianWindowSize = 5;
 constexpr float kMaxHrJumpPerUpdate = 16.0f;
-constexpr float kMaxSpo2JumpPerUpdate = 4.0f;
+constexpr float kMaxSpo2JumpPerUpdate = 5.5f;
 constexpr float kMinPerfusionIndex = 0.0012f;
 constexpr uint8_t kHrValidStreakRequired = 2;
 constexpr uint8_t kSpo2ValidStreakRequired = 1;
-constexpr uint8_t kInvalidStreakDrop = 8;
-constexpr float kMaxSpo2ReacquireJump = 4.0f;
+constexpr uint8_t kInvalidStreakDrop = 20;
+constexpr float kMaxSpo2ReacquireJump = 7.0f;
+constexpr float kSpo2MinQualityRatio = 0.08f;
+constexpr float kMaxSpo2FallbackJumpPerUpdate = 3.2f;
+constexpr uint32_t kSpo2MinIrDc = 20000;
+constexpr uint32_t kSpo2MinRedDc = 12000;
+constexpr float kSpo2MinAcP2P = 120.0f;
 constexpr uint8_t kCalibrationMinWindows = 1;
 constexpr uint32_t kBeatRealtimeStaleMs = 2500;
 constexpr float kAlgoHrMinQualityRatio = 0.28f;
 constexpr float kAlgoHrMaxDeltaFromDisplay = 15.0f;
 constexpr long kFingerDetectThreshold = 50000;
+constexpr uint32_t kIrTargetLow = 75000;
+constexpr uint32_t kIrTargetHigh = 150000;
+constexpr uint8_t kLedAmplitudeMin = 0x08;
+constexpr uint8_t kLedAmplitudeMax = 0x5F;
+constexpr uint8_t kLedAmplitudeStep = 2;
+constexpr uint32_t kLedTuneIntervalMs = 1000;
 constexpr uint8_t kMpuAddr0 = 0x68;
 constexpr uint8_t kMpuAddr1 = 0x69;
 constexpr uint8_t kMpuWhoAmIReg = 0x75;
@@ -177,6 +188,9 @@ uint8_t g_spo2InvalidStreak = 0;
 uint32_t g_lastBeatMs = 0;
 uint32_t g_lastFingerSeenMs = 0;
 float g_currentPerfusionIndex = 0.0f;
+uint8_t g_signalConfidence = 0;
+uint8_t g_ledAmplitude = 0x1F;
+uint32_t g_lastLedTuneMs = 0;
 float g_calibratedPerfusionIndex = kMinPerfusionIndex;
 uint32_t g_calibrationStartMs = 0;
 float g_calibrationPiSum = 0.0f;
@@ -302,6 +316,87 @@ const char* qualityText(SignalQuality quality) {
       return "GOOD";
   }
   return "UNKNOWN";
+}
+
+uint8_t clampConfidence(int value) {
+  if (value < 0) {
+    return 0;
+  }
+  if (value > 100) {
+    return 100;
+  }
+  return static_cast<uint8_t>(value);
+}
+
+uint8_t calcSignalConfidence(float qualityRatio, bool hrValid, bool spo2Valid) {
+  int score = 0;
+  score += static_cast<int>(std::max(0.0f, std::min(1.0f, (qualityRatio - 0.20f) / 0.80f)) * 60.0f);
+  if (hrValid) {
+    score += 20;
+  }
+  if (spo2Valid) {
+    score += 20;
+  }
+  return clampConfidence(score);
+}
+
+void autoTuneLedAmplitude(uint32_t irDc, uint32_t now) {
+  if (!g_vitals.fingerDetected) {
+    return;
+  }
+  if (now - g_lastLedTuneMs < kLedTuneIntervalMs) {
+    return;
+  }
+  g_lastLedTuneMs = now;
+
+  uint8_t nextAmp = g_ledAmplitude;
+  if (irDc < kIrTargetLow && g_ledAmplitude < kLedAmplitudeMax) {
+    const uint16_t raised = static_cast<uint16_t>(g_ledAmplitude) + kLedAmplitudeStep;
+    nextAmp = static_cast<uint8_t>(std::min<uint16_t>(raised, kLedAmplitudeMax));
+  } else if (irDc > kIrTargetHigh && g_ledAmplitude > kLedAmplitudeMin) {
+    const int lowered = static_cast<int>(g_ledAmplitude) - static_cast<int>(kLedAmplitudeStep);
+    nextAmp = static_cast<uint8_t>(std::max(lowered, static_cast<int>(kLedAmplitudeMin)));
+  }
+
+  if (nextAmp != g_ledAmplitude) {
+    g_ledAmplitude = nextAmp;
+    max30102.setPulseAmplitudeRed(g_ledAmplitude);
+    max30102.setPulseAmplitudeIR(g_ledAmplitude);
+    Serial.print("LED auto-tune amp=0x");
+    if (g_ledAmplitude < 16) {
+      Serial.print('0');
+    }
+    Serial.println(g_ledAmplitude, HEX);
+  }
+}
+
+bool estimateSpo2FromWindowFallback(uint32_t irDc, float irAcP2P, uint32_t redDc, float redAcP2P,
+                                    float* spo2Out) {
+  if (irDc < kSpo2MinIrDc || redDc < kSpo2MinRedDc || irAcP2P < kSpo2MinAcP2P ||
+      redAcP2P < kSpo2MinAcP2P) {
+    return false;
+  }
+
+  const float irNorm = irAcP2P / static_cast<float>(irDc);
+  const float redNorm = redAcP2P / static_cast<float>(redDc);
+  if (irNorm <= 1e-6f) {
+    return false;
+  }
+
+  const float ratio = redNorm / irNorm;
+  if (!isfinite(ratio) || ratio <= 0.0f || ratio > 3.0f) {
+    return false;
+  }
+
+  const float estimated = -45.060f * ratio * ratio + 30.354f * ratio + 94.845f;
+  if (!isfinite(estimated) || estimated < 80.0f || estimated > 100.0f) {
+    return false;
+  }
+
+  if (spo2Out != nullptr) {
+    *spo2Out = estimated;
+  }
+  return true;
 }
 
 const char* fallStateText(FallState state) {
@@ -532,8 +627,9 @@ void initMax30102() {
   const int adcRange = 4096;
 
   max30102.setup(ledBrightness, sampleAverage, ledMode, sampleRate, pulseWidth, adcRange);
-  max30102.setPulseAmplitudeRed(0x1F);
-  max30102.setPulseAmplitudeIR(0x1F);
+  g_ledAmplitude = 0x1F;
+  max30102.setPulseAmplitudeRed(g_ledAmplitude);
+  max30102.setPulseAmplitudeIR(g_ledAmplitude);
   max30102.setPulseAmplitudeGreen(0);
 
   Serial.println("MAX30102 initialized");
@@ -1027,20 +1123,32 @@ void updateSensor() {
 
       uint32_t irMin = g_irBuffer[0];
       uint32_t irMax = g_irBuffer[0];
+      uint32_t redMin = g_redBuffer[0];
+      uint32_t redMax = g_redBuffer[0];
       uint64_t irSum = 0;
+      uint64_t redSum = 0;
       for (size_t i = 0; i < kAlgoWindowSize; ++i) {
         irMin = std::min(irMin, g_irBuffer[i]);
         irMax = std::max(irMax, g_irBuffer[i]);
+        redMin = std::min(redMin, g_redBuffer[i]);
+        redMax = std::max(redMax, g_redBuffer[i]);
         irSum += g_irBuffer[i];
+        redSum += g_redBuffer[i];
       }
 
-      const float irDc = static_cast<float>(irSum) / static_cast<float>(kAlgoWindowSize);
+      const uint32_t irDcU32 = static_cast<uint32_t>(irSum / static_cast<uint64_t>(kAlgoWindowSize));
+      const float irDc = static_cast<float>(irDcU32);
       const float irAcP2P = static_cast<float>(irMax - irMin);
+      const uint32_t redDcU32 =
+          static_cast<uint32_t>(redSum / static_cast<uint64_t>(kAlgoWindowSize));
+      const float redAcP2P = static_cast<float>(redMax - redMin);
       const float perfusionIndex = (irDc > 0.0f) ? (irAcP2P / irDc) : 0.0f;
       g_currentPerfusionIndex = perfusionIndex;
       const float qualityRatio =
           perfusionIndex / std::max(g_calibratedPerfusionIndex, kMinPerfusionIndex);
       const bool signalQualityOk = perfusionIndex >= kMinPerfusionIndex;
+      g_signalConfidence = calcSignalConfidence(qualityRatio, g_vitals.heartRateValid, g_vitals.spo2Valid);
+      autoTuneLedAmplitude(irDcU32, now);
 
       if (g_sensorState == SensorState::Calibrating) {
         if (signalQualityOk) {
@@ -1060,6 +1168,7 @@ void updateSensor() {
       }
 
       const bool algoHrAccepted = signalQualityOk && (qualityRatio >= kAlgoHrMinQualityRatio) &&
+                                  (g_signalConfidence >= 30) &&
                                   algoHeartRateValid &&
                                   algoHeartRate >= static_cast<int32_t>(kMinAcceptedBpm) &&
                                   algoHeartRate <= static_cast<int32_t>(kMaxAcceptedBpm);
@@ -1099,15 +1208,36 @@ void updateSensor() {
         }
       }
 
-      const bool spo2WindowAccepted =
-          signalQualityOk && spo2Valid && spo2 >= kMinAcceptedSpo2 && spo2 <= kMaxAcceptedSpo2;
-      if (spo2WindowAccepted) {
+      float fallbackSpo2 = 0.0f;
+      const bool fallbackSpo2Valid =
+          estimateSpo2FromWindowFallback(irDcU32, irAcP2P, redDcU32, redAcP2P, &fallbackSpo2);
+      const bool algoSpo2Accepted = spo2Valid && (qualityRatio >= (kSpo2MinQualityRatio * 0.5f)) &&
+                                    spo2 >= kMinAcceptedSpo2 && spo2 <= kMaxAcceptedSpo2;
+
+      bool spo2CandidateReady = false;
+      bool spo2FromAlgo = false;
+      float spo2Candidate = 0.0f;
+      if (algoSpo2Accepted) {
+        spo2Candidate = static_cast<float>(spo2);
+        spo2CandidateReady = true;
+        spo2FromAlgo = true;
+      } else if (fallbackSpo2Valid) {
+        spo2Candidate = fallbackSpo2;
+        spo2CandidateReady = true;
+      }
+
+      if (spo2CandidateReady) {
         const float spo2Median = pushAndMedian(
-            static_cast<float>(spo2), g_spo2History, &g_spo2HistoryIndex, &g_spo2HistoryCount);
+            spo2Candidate, g_spo2History, &g_spo2HistoryIndex, &g_spo2HistoryCount);
 
         bool jumpOk = true;
         if (g_vitals.spo2Percent > 0.0f) {
-          const float limit = g_vitals.spo2Valid ? kMaxSpo2JumpPerUpdate : kMaxSpo2ReacquireJump;
+          float limit = g_vitals.spo2Valid
+                            ? (spo2FromAlgo ? kMaxSpo2JumpPerUpdate : kMaxSpo2FallbackJumpPerUpdate)
+                            : kMaxSpo2ReacquireJump;
+          if (g_vitals.spo2Valid && qualityRatio < 0.25f) {
+            limit += 1.5f;
+          }
           jumpOk = fabsf(spo2Median - g_vitals.spo2Percent) <= limit;
         }
 
@@ -1316,8 +1446,15 @@ void renderUi() {
   Serial.print(fallStateText(g_fallState));
   Serial.print(" Q=");
   Serial.print(qualityText(currentSignalQuality()));
+  Serial.print(" C=");
+  Serial.print(g_signalConfidence);
   Serial.print(" S=");
   Serial.print(sensorStateText());
+  Serial.print(" LED=0x");
+  if (g_ledAmplitude < 16) {
+    Serial.print('0');
+  }
+  Serial.print(g_ledAmplitude, HEX);
   Serial.print(" Src=");
   if (g_temperature.valid) {
     Serial.print(g_temperature.fromMax30102Die ? "MAX" : "MLX");

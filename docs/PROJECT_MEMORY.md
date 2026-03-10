@@ -407,3 +407,30 @@
 - 验证状态：
   - `python -m platformio run -e esp32-s3-devkitc-1`
   - 编译通过
+
+## 26. 2026-03-10 SpO2 链路重构（O2-Only Refactor for Continuous Output）
+- 背景：
+  - 实测日志显示 `SpO2` 在 `Q=POOR` 时长期 `--`，明显影响演示连续性。
+  - 用户明确要求“仅重构 O2，不改其他主线逻辑”。
+- 本次改动范围：
+  - 仅在 `firmware/src/main.cpp` 重构血氧更新链路；HR/跌倒/温度流程不做结构性变更。
+- 关键实现：
+  - `SpO2` 双通道候选：
+    - 主通道：`maxim_heart_rate_and_oxygen_saturation` 返回的 `spo2`
+    - 回退通道：窗口级 `AC/DC` 比值估算（`ratio -> quadratic`）
+  - 候选选择策略：
+    - 优先用主通道有效值；主通道无效时自动切换回退估算
+  - 回退估算安全门槛：
+    - `IR DC / RED DC / AC幅值` 必须达到最低条件，避免纯噪声出值
+  - 平滑与门控：
+    - 适度放宽 `SpO2` 跳变与重捕获阈值
+    - 延长 invalid streak 清空阈值，减少 `--%` 闪断
+- 参数更新（O2相关）：
+  - `kMinAcceptedSpo2: 90 -> 85`
+  - `kMaxSpo2JumpPerUpdate: 5.5`
+  - `kMaxSpo2ReacquireJump: 7.0`
+  - `kInvalidStreakDrop: 20`
+  - 新增 `kMaxSpo2FallbackJumpPerUpdate = 3.2`
+  - 新增 `kSpo2MinIrDc / kSpo2MinRedDc / kSpo2MinAcP2P`
+- 说明：
+  - 本次为“先保证可连续显示”的工程优化，不作为医疗级血氧结论依据。
