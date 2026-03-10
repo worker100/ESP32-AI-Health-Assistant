@@ -434,3 +434,23 @@
   - 新增 `kSpo2MinIrDc / kSpo2MinRedDc / kSpo2MinAcP2P`
 - 说明：
   - 本次为“先保证可连续显示”的工程优化，不作为医疗级血氧结论依据。
+
+## 27. 2026-03-11 SpO2 连续显示小幅调参（O2 Fine-Tuning, Non-Structural）
+- 背景：
+  - 在 26 节重构后，用户实测仍反馈 `O2=--%` 偶发持续时间偏长。
+  - 用户要求继续小幅调参，且只针对 `O2`。
+- 调参策略（仅 O2 参数，不改 HR 主流程）：
+  - 延长 O2 保持窗口：`kSpo2DisplayHoldMs 15000 -> 25000`
+  - 放宽 O2 下限：`kMinAcceptedSpo2 85 -> 82`
+  - 放宽 invalid 清空门槛：`kInvalidStreakDrop 20 -> 28`
+  - 放宽 fallback 单次变化：`kMaxSpo2FallbackJumpPerUpdate 3.2 -> 4.8`
+  - 放宽 fallback 最低信号门槛：
+    - `kSpo2MinIrDc 20000 -> 12000`
+    - `kSpo2MinRedDc 12000 -> 7000`
+    - `kSpo2MinAcP2P 120 -> 60`
+  - 放宽 fallback 比值上限：`ratio <= 3.0 -> <= 4.0`
+- 目的：
+  - 降低 `O2=--%` 频率，提升演示连续性，同时保持基础防噪声约束。
+- 验证状态：
+  - `python -m platformio run -e esp32-s3-devkitc-1`
+  - 编译通过

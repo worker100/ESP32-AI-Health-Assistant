@@ -30,12 +30,12 @@ constexpr uint32_t kBeatTimeoutMs = 12000;
 constexpr uint32_t kCalibrationDurationMs = 3000;
 constexpr uint32_t kFingerLostDebounceMs = 1800;
 constexpr uint32_t kHrDisplayHoldMs = 15000;
-constexpr uint32_t kSpo2DisplayHoldMs = 15000;
+constexpr uint32_t kSpo2DisplayHoldMs = 25000;
 constexpr float kHrDisplayAlpha = 0.35f;
 constexpr float kHrRealtimeMaxJump = 10.0f;
 constexpr float kMinAcceptedBpm = 45.0f;
 constexpr float kMaxAcceptedBpm = 125.0f;
-constexpr int32_t kMinAcceptedSpo2 = 85;
+constexpr int32_t kMinAcceptedSpo2 = 82;
 constexpr int32_t kMaxAcceptedSpo2 = 100;
 constexpr size_t kAlgoWindowSize = 100;
 constexpr size_t kAlgoStepSamples = 25;
@@ -48,13 +48,13 @@ constexpr float kMaxSpo2JumpPerUpdate = 5.5f;
 constexpr float kMinPerfusionIndex = 0.0012f;
 constexpr uint8_t kHrValidStreakRequired = 2;
 constexpr uint8_t kSpo2ValidStreakRequired = 1;
-constexpr uint8_t kInvalidStreakDrop = 20;
+constexpr uint8_t kInvalidStreakDrop = 28;
 constexpr float kMaxSpo2ReacquireJump = 7.0f;
 constexpr float kSpo2MinQualityRatio = 0.08f;
-constexpr float kMaxSpo2FallbackJumpPerUpdate = 3.2f;
-constexpr uint32_t kSpo2MinIrDc = 20000;
-constexpr uint32_t kSpo2MinRedDc = 12000;
-constexpr float kSpo2MinAcP2P = 120.0f;
+constexpr float kMaxSpo2FallbackJumpPerUpdate = 4.8f;
+constexpr uint32_t kSpo2MinIrDc = 12000;
+constexpr uint32_t kSpo2MinRedDc = 7000;
+constexpr float kSpo2MinAcP2P = 60.0f;
 constexpr uint8_t kCalibrationMinWindows = 1;
 constexpr uint32_t kBeatRealtimeStaleMs = 2500;
 constexpr float kAlgoHrMinQualityRatio = 0.28f;
@@ -384,7 +384,7 @@ bool estimateSpo2FromWindowFallback(uint32_t irDc, float irAcP2P, uint32_t redDc
   }
 
   const float ratio = redNorm / irNorm;
-  if (!isfinite(ratio) || ratio <= 0.0f || ratio > 3.0f) {
+  if (!isfinite(ratio) || ratio <= 0.0f || ratio > 4.0f) {
     return false;
   }
 

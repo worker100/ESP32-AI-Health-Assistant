@@ -216,3 +216,18 @@
   - `kMaxSpo2FallbackJumpPerUpdate = 3.2`
 - 备注：
   - 该改动以“演示可持续出值”为优先目标，非医疗级标定实现。
+
+## 15. 2026-03-11 O2 小步调参补充（Only O2 Fine-Tuning）
+- 调参目标：
+  - 继续降低 `O2=--%` 占比，减少显示断续。
+- 本次仅修改 O2 相关参数：
+  - `kSpo2DisplayHoldMs = 25000`
+  - `kMinAcceptedSpo2 = 82`
+  - `kInvalidStreakDrop = 28`
+  - `kMaxSpo2FallbackJumpPerUpdate = 4.8`
+  - `kSpo2MinIrDc = 12000`
+  - `kSpo2MinRedDc = 7000`
+  - `kSpo2MinAcP2P = 60`
+  - fallback 比值上限：`ratio <= 4.0`
+- 说明：
+  - 本次未改 HR 门控与 HR 显示逻辑，聚焦 O2 连续性。
