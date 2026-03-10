@@ -28,14 +28,14 @@ constexpr uint32_t kTempReadMs = 1000;
 constexpr uint32_t kMlxRetryMs = 5000;
 constexpr uint32_t kBeatTimeoutMs = 12000;
 constexpr uint32_t kCalibrationDurationMs = 3000;
-constexpr uint32_t kFingerLostDebounceMs = 1200;
-constexpr uint32_t kHrDisplayHoldMs = 8000;
+constexpr uint32_t kFingerLostDebounceMs = 1800;
+constexpr uint32_t kHrDisplayHoldMs = 15000;
 constexpr uint32_t kSpo2DisplayHoldMs = 15000;
 constexpr float kHrDisplayAlpha = 0.35f;
 constexpr float kHrRealtimeMaxJump = 10.0f;
 constexpr float kMinAcceptedBpm = 45.0f;
-constexpr float kMaxAcceptedBpm = 140.0f;
-constexpr int32_t kMinAcceptedSpo2 = 85;
+constexpr float kMaxAcceptedBpm = 125.0f;
+constexpr int32_t kMinAcceptedSpo2 = 90;
 constexpr int32_t kMaxAcceptedSpo2 = 100;
 constexpr size_t kAlgoWindowSize = 100;
 constexpr size_t kAlgoStepSamples = 25;
@@ -43,14 +43,17 @@ constexpr float kHrEwmaAlpha = 0.30f;
 constexpr float kHrAlgoFallbackAlpha = 0.22f;
 constexpr float kSpo2EwmaAlpha = 0.25f;
 constexpr uint8_t kMedianWindowSize = 5;
-constexpr float kMaxHrJumpPerUpdate = 20.0f;
+constexpr float kMaxHrJumpPerUpdate = 16.0f;
 constexpr float kMaxSpo2JumpPerUpdate = 4.0f;
 constexpr float kMinPerfusionIndex = 0.0012f;
-constexpr uint8_t kValidStreakRequired = 1;
+constexpr uint8_t kHrValidStreakRequired = 2;
+constexpr uint8_t kSpo2ValidStreakRequired = 1;
 constexpr uint8_t kInvalidStreakDrop = 8;
 constexpr float kMaxSpo2ReacquireJump = 4.0f;
 constexpr uint8_t kCalibrationMinWindows = 1;
 constexpr uint32_t kBeatRealtimeStaleMs = 2500;
+constexpr float kAlgoHrMinQualityRatio = 0.28f;
+constexpr float kAlgoHrMaxDeltaFromDisplay = 15.0f;
 constexpr long kFingerDetectThreshold = 50000;
 constexpr uint8_t kMpuAddr0 = 0x68;
 constexpr uint8_t kMpuAddr1 = 0x69;
@@ -123,6 +126,7 @@ struct VitalSigns {
   uint32_t lastHrUpdateMs = 0;
   uint32_t lastSpo2UpdateMs = 0;
   uint32_t lastHrBeatAcceptedMs = 0;
+  uint32_t lastHrDisplayRefreshMs = 0;
   uint32_t irValue = 0;
   uint32_t redValue = 0;
 };
@@ -237,6 +241,7 @@ void resetMeasurementFilters() {
   g_vitals.heartRateDisplayValid = false;
   g_vitals.heartRateRealtimeValid = false;
   g_vitals.lastHrBeatAcceptedMs = 0;
+  g_vitals.lastHrDisplayRefreshMs = 0;
 }
 
 void startCalibration(uint32_t now) {
@@ -1033,6 +1038,8 @@ void updateSensor() {
       const float irAcP2P = static_cast<float>(irMax - irMin);
       const float perfusionIndex = (irDc > 0.0f) ? (irAcP2P / irDc) : 0.0f;
       g_currentPerfusionIndex = perfusionIndex;
+      const float qualityRatio =
+          perfusionIndex / std::max(g_calibratedPerfusionIndex, kMinPerfusionIndex);
       const bool signalQualityOk = perfusionIndex >= kMinPerfusionIndex;
 
       if (g_sensorState == SensorState::Calibrating) {
@@ -1052,7 +1059,8 @@ void updateSensor() {
         continue;
       }
 
-      const bool algoHrAccepted = signalQualityOk && algoHeartRateValid &&
+      const bool algoHrAccepted = signalQualityOk && (qualityRatio >= kAlgoHrMinQualityRatio) &&
+                                  algoHeartRateValid &&
                                   algoHeartRate >= static_cast<int32_t>(kMinAcceptedBpm) &&
                                   algoHeartRate <= static_cast<int32_t>(kMaxAcceptedBpm);
       if (algoHrAccepted) {
@@ -1060,6 +1068,9 @@ void updateSensor() {
         bool jumpOk = true;
         if (g_vitals.heartRateBpm > 0.0f) {
           jumpOk = fabsf(algoBpm - g_vitals.heartRateBpm) <= (kMaxHrJumpPerUpdate + 12.0f);
+        }
+        if (jumpOk && g_vitals.heartRateDisplayValid) {
+          jumpOk = fabsf(algoBpm - g_vitals.heartRateDisplayBpm) <= kAlgoHrMaxDeltaFromDisplay;
         }
 
         if (jumpOk) {
@@ -1078,11 +1089,12 @@ void updateSensor() {
             if (!g_vitals.heartRateDisplayValid) {
               g_vitals.heartRateDisplayBpm = algoBpm;
             } else {
-            g_vitals.heartRateDisplayBpm =
+              g_vitals.heartRateDisplayBpm =
                   (1.0f - kHrAlgoFallbackAlpha) * g_vitals.heartRateDisplayBpm +
                   kHrAlgoFallbackAlpha * algoBpm;
             }
             g_vitals.heartRateDisplayValid = true;
+            g_vitals.lastHrDisplayRefreshMs = now;
           }
         }
       }
@@ -1106,7 +1118,7 @@ void updateSensor() {
           }
 
           if (!g_vitals.spo2Valid) {
-            if (g_spo2ValidStreak >= kValidStreakRequired) {
+            if (g_spo2ValidStreak >= kSpo2ValidStreakRequired) {
               g_vitals.spo2Valid = true;
               g_vitals.spo2Percent = spo2Median;
               g_vitals.lastSpo2UpdateMs = now;
@@ -1156,7 +1168,7 @@ void updateSensor() {
             }
 
             if (!g_vitals.heartRateValid) {
-              if (g_hrValidStreak >= kValidStreakRequired) {
+              if (g_hrValidStreak >= kHrValidStreakRequired) {
                 g_vitals.heartRateValid = true;
                 g_vitals.heartRateBpm = hrMedian;
                 g_vitals.lastHrUpdateMs = now;
@@ -1186,6 +1198,7 @@ void updateSensor() {
             }
             g_vitals.heartRateDisplayValid = true;
             g_vitals.lastHrBeatAcceptedMs = now;
+            g_vitals.lastHrDisplayRefreshMs = now;
           } else {
             g_hrValidStreak = 0;
             if (g_hrInvalidStreak < 255) {
@@ -1204,7 +1217,7 @@ void updateSensor() {
   }
 
   if (g_vitals.fingerDetected && g_vitals.heartRateDisplayValid &&
-      (millis() - g_vitals.lastHrBeatAcceptedMs) > kHrDisplayHoldMs) {
+      (millis() - g_vitals.lastHrDisplayRefreshMs) > kHrDisplayHoldMs) {
     g_vitals.heartRateDisplayValid = false;
     g_vitals.heartRateRealtimeValid = false;
     g_vitals.heartRateDisplayBpm = 0.0f;

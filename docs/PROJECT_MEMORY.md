@@ -384,3 +384,26 @@
 - 当前编译状态：
   - `python -m platformio run -e esp32-s3-devkitc-1`
   - 结果：通过
+
+## 25. 2026-03-10 心率显示连续性与异常尖峰抑制优化（HR Continuity + Spike Guard）
+- 背景（基于最新串口日志）：
+  - 存在 `HR` 长时间 `--` 与偶发偏高尖峰（如 `100+`）并存的问题。
+  - `Q=POOR` 场景下，原逻辑容易出现“更新慢 + 平台值保持 + 偶发突跳”。
+- 本次优化目标：
+  - 降低 `HR=--` 持续时长，提升连续显示体验。
+  - 抑制不合理的高心率尖峰，避免演示观感异常。
+- 代码层主要改动（`firmware/src/main.cpp`）：
+  - 指尖丢失防抖：`kFingerLostDebounceMs 1200 -> 1800`
+  - HR 显示保持：`kHrDisplayHoldMs 8000 -> 15000`
+  - 心率上限：`kMaxAcceptedBpm 140 -> 125`
+  - 血氧下限：`kMinAcceptedSpo2 85 -> 90`
+  - 心率单次跳变限制：`kMaxHrJumpPerUpdate 20 -> 16`
+  - 新增 HR 连续有效门槛：`kHrValidStreakRequired = 2`
+  - SpO2 连续有效门槛独立：`kSpo2ValidStreakRequired = 1`
+  - 新增算法回退质量门槛与显示差值门槛：
+    - `kAlgoHrMinQualityRatio = 0.28`
+    - `kAlgoHrMaxDeltaFromDisplay = 15`
+  - 新增 `lastHrDisplayRefreshMs`，由逐拍更新和算法回退共同刷新，避免仅靠 `lastHrBeatAcceptedMs` 导致过早掉 `--`
+- 验证状态：
+  - `python -m platformio run -e esp32-s3-devkitc-1`
+  - 编译通过

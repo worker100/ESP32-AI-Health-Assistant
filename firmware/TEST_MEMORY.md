@@ -179,3 +179,21 @@
   - 保持 `kSpo2DisplayHoldMs = 15000`、`kInvalidStreakDrop = 8` 的此前配置
 - 本次回退的目的：
   - 优先恢复“更快出值 + 可演示”的体验，再做小步参数微调。
+
+## 13. 2026-03-10 HR 连续显示与异常值抑制实验（Based on Real Logs）
+- 现象：
+  - 用户实测日志显示：`HR` 在 `POOR` 质量下易长时间 `--`，且偶发偏高尖峰。
+- 本次在主程序的调参项：
+  - `kFingerLostDebounceMs: 1200 -> 1800`
+  - `kHrDisplayHoldMs: 8000 -> 15000`
+  - `kMaxAcceptedBpm: 140 -> 125`
+  - `kMinAcceptedSpo2: 85 -> 90`
+  - `kMaxHrJumpPerUpdate: 20 -> 16`
+  - 新增 `kHrValidStreakRequired = 2`（HR 更稳）
+  - 新增 `kSpo2ValidStreakRequired = 1`（SpO2 保持出值）
+  - 新增算法回退门槛：
+    - `kAlgoHrMinQualityRatio = 0.28`
+    - `kAlgoHrMaxDeltaFromDisplay = 15`
+  - 新增 `lastHrDisplayRefreshMs` 作为 HR 显示保持时间基准
+- 当前结论：
+  - 该版属于“低风险小步优化”，优先改显示连续性与异常尖峰，未引入大算法重构。
