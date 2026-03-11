@@ -76,19 +76,19 @@ constexpr uint8_t kMpuAccelStartReg = 0x3B;
 constexpr uint32_t kMpuReadMs = 100;
 constexpr uint32_t kAlarmContinuousMs = 12000;
 constexpr uint32_t kAlarmMonitorMs = 30000;
-constexpr uint32_t kImpactWindowMs = 600;
-constexpr uint32_t kStillWindowMs = 1800;
+constexpr uint32_t kImpactWindowMs = 1300;
+constexpr uint32_t kStillWindowMs = 700;
 constexpr uint32_t kFallCooldownMs = 3000;
 constexpr uint32_t kAlertBurstIntervalMs = 900;
 constexpr uint32_t kMonitorBurstIntervalMs = 3000;
-constexpr float kFreeFallThresholdG = 0.60f;
-constexpr float kImpactThresholdG = 1.80f;
-constexpr float kImpactRotationThresholdDps = 60.0f;
+constexpr float kFreeFallThresholdG = 0.80f;
+constexpr float kImpactThresholdG = 0.95f;
+constexpr float kImpactRotationThresholdDps = 20.0f;
 constexpr float kStillAccelMinG = 0.85f;
 constexpr float kStillAccelMaxG = 1.15f;
-constexpr float kStillGyroThresholdDps = 25.0f;
-constexpr float kRecoveryAccelThresholdG = 1.30f;
-constexpr float kRecoveryGyroThresholdDps = 60.0f;
+constexpr float kStillGyroThresholdDps = 40.0f;
+constexpr float kRecoveryAccelThresholdG = 1.55f;
+constexpr float kRecoveryGyroThresholdDps = 110.0f;
 constexpr i2s_port_t kI2sPort = I2S_NUM_0;
 constexpr int kI2sSampleRate = 16000;
 constexpr int kI2sBclkPin = 4;
@@ -429,6 +429,31 @@ const char* fallStateUiText(FallState state) {
       return "MON";
   }
   return "UNK";
+}
+
+void printFallThresholds() {
+  Serial.println("Fall thresholds:");
+  Serial.print("  FREEFALL: M < ");
+  Serial.print(kFreeFallThresholdG, 2);
+  Serial.println("g");
+  Serial.print("  IMPACT: M > ");
+  Serial.print(kImpactThresholdG, 2);
+  Serial.print("g and Gmax > ");
+  Serial.print(kImpactRotationThresholdDps, 0);
+  Serial.println(" dps");
+  Serial.print("  IMPACT window: ");
+  Serial.print(kImpactWindowMs);
+  Serial.println(" ms");
+  Serial.print("  STILL: M in [");
+  Serial.print(kStillAccelMinG, 2);
+  Serial.print(", ");
+  Serial.print(kStillAccelMaxG, 2);
+  Serial.print("] g and Gmax < ");
+  Serial.print(kStillGyroThresholdDps, 0);
+  Serial.println(" dps");
+  Serial.print("  STILL window: ");
+  Serial.print(kStillWindowMs);
+  Serial.println(" ms");
 }
 
 const char* qualityUiText(SignalQuality quality) {
@@ -1444,6 +1469,13 @@ void renderUi() {
   }
   Serial.print(" F=");
   Serial.print(fallStateText(g_fallState));
+  Serial.print(" Thr(FF<");
+  Serial.print(kFreeFallThresholdG, 2);
+  Serial.print(" IMP>");
+  Serial.print(kImpactThresholdG, 2);
+  Serial.print(" G>");
+  Serial.print(kImpactRotationThresholdDps, 0);
+  Serial.print(")");
   Serial.print(" Q=");
   Serial.print(qualityText(currentSignalQuality()));
   Serial.print(" C=");
@@ -1469,6 +1501,7 @@ void setup() {
   Serial.begin(115200);
   delay(300);
   Serial.println("Booting ESP32 AI Health Assistant...");
+  printFallThresholds();
 
   initI2c();
   i2cScan();

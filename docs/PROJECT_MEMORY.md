@@ -454,3 +454,50 @@
 - 验证状态：
   - `python -m platformio run -e esp32-s3-devkitc-1`
   - 编译通过
+
+## 28. 2026-03-12 INMP441 接入验证与麦克风测试环境新增（I2S RX Bring-up）
+- 新增独立测试环境：
+  - `firmware/platformio.ini` 新增 `env:inmp441-i2s-test`
+  - 对应入口文件：`firmware/src/inmp441_i2s_test.cpp`
+- 本次接线基线（用户实测通过）：
+  - `VCC -> 3V3`
+  - `GND -> GND`
+  - `SCK(BCLK) -> GPIO15`
+  - `WS(LRCLK) -> GPIO16`
+  - `SD(DATA) -> GPIO17`
+  - `L/R -> GND`（左声道）
+- 测试程序能力：
+  - I2S RX 采样（16kHz，32bit容器，单声道）
+  - 实时打印 `RMS/Peak/MeanAbs`
+  - 自动噪声基线校准（3秒）
+  - VAD 状态输出：`VOICE_ON / VOICE_OFF`
+  - 打印动态阈值：`NF / VOn / VOff`
+  - 削顶监控：`Clip%`
+- 实测结论：
+  - 麦克风链路已打通，可稳定区分静音与说话场景；
+  - `VAD` 可正常切换，满足下一步语音功能接入前的硬件验收。
+
+## 29. 2026-03-12 麦克风测试阶段喇叭噪声抑制（Speaker Hiss Mitigation in MIC Test）
+- 背景：
+  - 用户在纯麦克风测试阶段听到喇叭“滋滋声”，影响联调体验。
+- 处理方式（仅测试程序，不改主线报警逻辑）：
+  - 在 `inmp441_i2s_test.cpp` 启动时将功放相关 I2S 引脚固定为低电平：
+    - `GPIO4 / GPIO5 / GPIO6`
+  - 目的：避免功放输入悬空或时钟串扰导致底噪。
+- 结果：
+  - 用户反馈“滋滋声消失”，当前测试方案可继续沿用。
+
+## 30. 2026-03-12 跌倒阈值参数与串口可视化补充（Mainline Fall Tuning + Visibility）
+- 主程序（`firmware/src/main.cpp`）新增/调整：
+  - 阈值调整为桌面演示友好组合：
+    - `kFreeFallThresholdG = 0.80`
+    - `kImpactThresholdG = 0.95`
+    - `kImpactRotationThresholdDps = 20`
+    - `kImpactWindowMs = 1300`
+    - `kStillWindowMs = 700`
+    - `kStillGyroThresholdDps = 40`
+    - `kRecoveryAccelThresholdG = 1.55`
+    - `kRecoveryGyroThresholdDps = 110`
+  - 新增 `printFallThresholds()`：开机串口打印完整跌倒判定阈值。
+  - 串口状态行新增 `Thr(FF<... IMP>... G>...)`，便于现场调参对照。
+- MPU 独立测试程序（`firmware/src/mpu6050_oled_test.cpp`）同步做了更温和测试阈值调整，便于桌面跌落调试。
