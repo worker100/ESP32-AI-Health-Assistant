@@ -96,6 +96,21 @@ constexpr int kI2sLrcPin = 5;
 constexpr int kI2sDinPin = 6;
 constexpr int kI2sBitsPerSample = 16;
 constexpr size_t kI2sAudioBufferSamples = 128;
+constexpr bool kEnableMicVad = true;
+constexpr i2s_port_t kMicI2sPort = I2S_NUM_1;
+constexpr int kMicSampleRate = 16000;
+constexpr int kMicBclkPin = 15;
+constexpr int kMicWsPin = 16;
+constexpr int kMicDinPin = 17;
+constexpr size_t kMicVadSamples = 256;
+constexpr uint32_t kMicVadUpdateMs = 120;
+constexpr uint32_t kMicVadCalMs = 3000;
+constexpr float kMicVadNoiseAlpha = 0.08f;
+constexpr float kMicVadOnFactor = 2.8f;
+constexpr float kMicVadOffFactor = 1.8f;
+constexpr float kMicVadMinOn = 0.012f;
+constexpr float kMicVadMinOff = 0.0065f;
+constexpr uint32_t kMicVadOffHoldMs = 450;
 
 enum class SensorState {
   WaitingFinger,
@@ -119,6 +134,23 @@ enum class SignalQuality {
   Fair,
   Good,
 };
+
+enum class SystemMode {
+  Booting,
+  Monitoring,
+  Alerting,
+  Degraded,
+};
+
+constexpr uint32_t kEvtFallFreeFall = 1UL << 0;
+constexpr uint32_t kEvtFallImpact = 1UL << 1;
+constexpr uint32_t kEvtFallAlert = 1UL << 2;
+constexpr uint32_t kEvtFallCleared = 1UL << 3;
+constexpr uint32_t kEvtNoFinger = 1UL << 4;
+constexpr uint32_t kEvtFingerDetected = 1UL << 5;
+constexpr uint32_t kEvtSensorError = 1UL << 6;
+constexpr uint32_t kEvtSensorRecovered = 1UL << 7;
+constexpr uint32_t kEvtVoiceWakeReserved = 1UL << 8;
 
 Adafruit_SSD1306 display(kScreenWidth, kScreenHeight, &Wire, -1);
 MAX30105 max30102;
@@ -197,6 +229,7 @@ float g_calibrationPiSum = 0.0f;
 uint8_t g_calibrationWindowCount = 0;
 bool g_mpuReady = false;
 bool g_i2sReady = false;
+bool g_micReady = false;
 uint8_t g_mpuAddr = 0;
 uint32_t g_lastMpuReadMs = 0;
 uint32_t g_freeFallMs = 0;
@@ -206,6 +239,20 @@ uint32_t g_cooldownUntilMs = 0;
 uint32_t g_nextAlarmMs = 0;
 FallState g_fallState = FallState::Normal;
 MpuSample g_mpuSample;
+SystemMode g_systemMode = SystemMode::Booting;
+uint32_t g_pendingEvents = 0;
+uint32_t g_lastEventLogMs = 0;
+bool g_lastFingerEventState = false;
+bool g_sensorFaultLatched = false;
+bool g_voiceActive = false;
+bool g_voiceCalibrated = false;
+float g_voiceNoiseFloor = 0.0f;
+float g_voiceRms = 0.0f;
+float g_voiceOnThreshold = 0.0f;
+float g_voiceOffThreshold = 0.0f;
+uint32_t g_voiceStartMs = 0;
+uint32_t g_voiceLastUpdateMs = 0;
+uint32_t g_voiceLastActiveMs = 0;
 
 float medianFromHistory(const float* history, uint8_t count) {
   if (count == 0) {
@@ -429,6 +476,81 @@ const char* fallStateUiText(FallState state) {
       return "MON";
   }
   return "UNK";
+}
+
+void publishEvent(uint32_t eventBit) {
+  g_pendingEvents |= eventBit;
+}
+
+const char* systemModeText(SystemMode mode) {
+  switch (mode) {
+    case SystemMode::Booting:
+      return "BOOT";
+    case SystemMode::Monitoring:
+      return "MON";
+    case SystemMode::Alerting:
+      return "ALERT";
+    case SystemMode::Degraded:
+      return "DEG";
+  }
+  return "UNK";
+}
+
+void updateSystemModeAndEvents(uint32_t now) {
+  const bool fallActive = (g_fallState == FallState::Alert || g_fallState == FallState::Monitor);
+  const bool sensorFault = !g_mpuReady || !g_i2sReady || (kEnableMicVad && !g_micReady);
+
+  if (sensorFault && !g_sensorFaultLatched) {
+    g_sensorFaultLatched = true;
+    publishEvent(kEvtSensorError);
+  } else if (!sensorFault && g_sensorFaultLatched) {
+    g_sensorFaultLatched = false;
+    publishEvent(kEvtSensorRecovered);
+  }
+
+  if (fallActive) {
+    g_systemMode = SystemMode::Alerting;
+  } else if (sensorFault) {
+    g_systemMode = SystemMode::Degraded;
+  } else {
+    g_systemMode = SystemMode::Monitoring;
+  }
+
+  if (g_pendingEvents == 0 || (now - g_lastEventLogMs) < 120) {
+    return;
+  }
+
+  g_lastEventLogMs = now;
+  Serial.print("EVT:");
+  if (g_pendingEvents & kEvtFallFreeFall) {
+    Serial.print(" FREEFALL");
+  }
+  if (g_pendingEvents & kEvtFallImpact) {
+    Serial.print(" IMPACT");
+  }
+  if (g_pendingEvents & kEvtFallAlert) {
+    Serial.print(" FALL_ALERT");
+  }
+  if (g_pendingEvents & kEvtFallCleared) {
+    Serial.print(" FALL_CLEARED");
+  }
+  if (g_pendingEvents & kEvtFingerDetected) {
+    Serial.print(" FINGER_ON");
+  }
+  if (g_pendingEvents & kEvtNoFinger) {
+    Serial.print(" FINGER_OFF");
+  }
+  if (g_pendingEvents & kEvtSensorError) {
+    Serial.print(" SENSOR_ERR");
+  }
+  if (g_pendingEvents & kEvtSensorRecovered) {
+    Serial.print(" SENSOR_OK");
+  }
+  if (g_pendingEvents & kEvtVoiceWakeReserved) {
+    Serial.print(" VOICE_WAKE");
+  }
+  Serial.println();
+  g_pendingEvents = 0;
 }
 
 void printFallThresholds() {
@@ -750,6 +872,111 @@ void initI2sAudio() {
   }
 }
 
+void initMicI2s() {
+  g_micReady = false;
+  g_voiceActive = false;
+  g_voiceCalibrated = false;
+  g_voiceNoiseFloor = 0.0f;
+  g_voiceRms = 0.0f;
+  g_voiceOnThreshold = 0.0f;
+  g_voiceOffThreshold = 0.0f;
+  g_voiceStartMs = millis();
+  g_voiceLastUpdateMs = 0;
+  g_voiceLastActiveMs = 0;
+
+  if (!kEnableMicVad) {
+    return;
+  }
+
+  const i2s_config_t cfg = {
+      .mode = static_cast<i2s_mode_t>(I2S_MODE_MASTER | I2S_MODE_RX),
+      .sample_rate = kMicSampleRate,
+      .bits_per_sample = I2S_BITS_PER_SAMPLE_32BIT,
+      .channel_format = I2S_CHANNEL_FMT_ONLY_LEFT,
+      .communication_format = I2S_COMM_FORMAT_STAND_I2S,
+      .intr_alloc_flags = 0,
+      .dma_buf_count = 4,
+      .dma_buf_len = 256,
+      .use_apll = false,
+      .tx_desc_auto_clear = false,
+      .fixed_mclk = 0,
+  };
+
+  const i2s_pin_config_t pins = {
+      .bck_io_num = kMicBclkPin,
+      .ws_io_num = kMicWsPin,
+      .data_out_num = I2S_PIN_NO_CHANGE,
+      .data_in_num = kMicDinPin,
+  };
+
+  i2s_driver_uninstall(kMicI2sPort);
+  if (i2s_driver_install(kMicI2sPort, &cfg, 0, nullptr) == ESP_OK &&
+      i2s_set_pin(kMicI2sPort, &pins) == ESP_OK) {
+    i2s_zero_dma_buffer(kMicI2sPort);
+    g_micReady = true;
+    Serial.println("INMP441 VAD I2S init OK");
+  } else {
+    Serial.println("INMP441 VAD I2S init failed");
+  }
+}
+
+void updateVoiceVad(uint32_t now) {
+  if (!kEnableMicVad || !g_micReady || (now - g_voiceLastUpdateMs) < kMicVadUpdateMs) {
+    return;
+  }
+  g_voiceLastUpdateMs = now;
+
+  int32_t raw[kMicVadSamples] = {0};
+  size_t bytesRead = 0;
+  const esp_err_t err =
+      i2s_read(kMicI2sPort, raw, sizeof(raw), &bytesRead, pdMS_TO_TICKS(12));
+  if (err != ESP_OK || bytesRead == 0) {
+    return;
+  }
+
+  const size_t samples = bytesRead / sizeof(int32_t);
+  if (samples == 0) {
+    return;
+  }
+
+  double sumSq = 0.0;
+  for (size_t i = 0; i < samples; ++i) {
+    const int32_t s24 = raw[i] >> 8;
+    sumSq += static_cast<double>(s24) * static_cast<double>(s24);
+  }
+  g_voiceRms = sqrtf(sumSq / static_cast<float>(samples)) / 8388608.0f;
+
+  if (!g_voiceCalibrated) {
+    if (g_voiceNoiseFloor <= 0.0f) {
+      g_voiceNoiseFloor = g_voiceRms;
+    } else {
+      g_voiceNoiseFloor =
+          (1.0f - kMicVadNoiseAlpha) * g_voiceNoiseFloor + kMicVadNoiseAlpha * g_voiceRms;
+    }
+    if ((now - g_voiceStartMs) >= kMicVadCalMs) {
+      g_voiceCalibrated = true;
+    }
+  } else if (!g_voiceActive) {
+    g_voiceNoiseFloor =
+        (1.0f - kMicVadNoiseAlpha) * g_voiceNoiseFloor + kMicVadNoiseAlpha * g_voiceRms;
+  }
+
+  g_voiceOnThreshold = std::max(kMicVadMinOn, g_voiceNoiseFloor * kMicVadOnFactor);
+  g_voiceOffThreshold = std::max(kMicVadMinOff, g_voiceNoiseFloor * kMicVadOffFactor);
+
+  if (!g_voiceActive && g_voiceCalibrated && g_voiceRms >= g_voiceOnThreshold) {
+    g_voiceActive = true;
+    g_voiceLastActiveMs = now;
+    publishEvent(kEvtVoiceWakeReserved);
+  } else if (g_voiceActive) {
+    if (g_voiceRms >= g_voiceOffThreshold) {
+      g_voiceLastActiveMs = now;
+    } else if (now - g_voiceLastActiveMs > kMicVadOffHoldMs) {
+      g_voiceActive = false;
+    }
+  }
+}
+
 void playTone(float frequencyHz, uint16_t durationMs, float amplitude = 0.35f) {
   if (!g_i2sReady) {
     return;
@@ -1014,6 +1241,7 @@ void updateFallState(uint32_t now) {
   if (!g_mpuSample.valid) {
     return;
   }
+  const FallState prevState = g_fallState;
 
   const bool stillNow = g_mpuSample.accelMagG >= kStillAccelMinG &&
                         g_mpuSample.accelMagG <= kStillAccelMaxG &&
@@ -1074,6 +1302,20 @@ void updateFallState(uint32_t now) {
       }
       break;
   }
+
+  if (g_fallState != prevState) {
+    if (g_fallState == FallState::FreeFall) {
+      publishEvent(kEvtFallFreeFall);
+    } else if (g_fallState == FallState::Impact) {
+      publishEvent(kEvtFallImpact);
+    } else if (g_fallState == FallState::Alert) {
+      publishEvent(kEvtFallAlert);
+    } else if (g_fallState == FallState::Normal &&
+               (prevState == FallState::Alert || prevState == FallState::Monitor ||
+                prevState == FallState::Impact || prevState == FallState::FreeFall)) {
+      publishEvent(kEvtFallCleared);
+    }
+  }
 }
 
 void updateAlarm(uint32_t now) {
@@ -1109,6 +1351,10 @@ void updateSensor() {
       g_lastFingerSeenMs = now;
     }
     g_vitals.fingerDetected = fingerNow || ((now - g_lastFingerSeenMs) <= kFingerLostDebounceMs);
+    if (g_vitals.fingerDetected != g_lastFingerEventState) {
+      g_lastFingerEventState = g_vitals.fingerDetected;
+      publishEvent(g_vitals.fingerDetected ? kEvtFingerDetected : kEvtNoFinger);
+    }
 
     if (!g_vitals.fingerDetected) {
       g_sensorState = SensorState::WaitingFinger;
@@ -1487,6 +1733,18 @@ void renderUi() {
     Serial.print('0');
   }
   Serial.print(g_ledAmplitude, HEX);
+  Serial.print(" M=");
+  Serial.print(systemModeText(g_systemMode));
+  if (kEnableMicVad) {
+    Serial.print(" V=");
+    if (!g_voiceCalibrated) {
+      Serial.print("CAL");
+    } else {
+      Serial.print(g_voiceActive ? "ON" : "OFF");
+    }
+    Serial.print(" VRMS=");
+    Serial.print(g_voiceRms, 3);
+  }
   Serial.print(" Src=");
   if (g_temperature.valid) {
     Serial.print(g_temperature.fromMax30102Die ? "MAX" : "MLX");
@@ -1509,10 +1767,19 @@ void setup() {
   initMax30102();
   initMpu6050();
   initI2sAudio();
+  initMicI2s();
   if (kEnableMlx90614) {
     initMlx90614(true);
   } else {
     Serial.println("MLX90614 disabled, using MAX30102 die temperature.");
+  }
+
+  g_systemMode = SystemMode::Monitoring;
+  g_sensorFaultLatched = (!g_mpuReady || !g_i2sReady || (kEnableMicVad && !g_micReady));
+  if (g_sensorFaultLatched) {
+    publishEvent(kEvtSensorError);
+  } else {
+    publishEvent(kEvtSensorRecovered);
   }
 }
 
@@ -1525,6 +1792,8 @@ void loop() {
   }
   updateFallState(now);
   updateAlarm(now);
+  updateVoiceVad(now);
   updateTemperature();
+  updateSystemModeAndEvents(now);
   renderUi();
 }
