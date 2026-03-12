@@ -33,6 +33,8 @@ constexpr uint32_t kHrDisplayHoldMs = 15000;
 constexpr uint32_t kSpo2DisplayHoldMs = 25000;
 constexpr float kHrDisplayAlpha = 0.35f;
 constexpr float kHrRealtimeMaxJump = 10.0f;
+constexpr float kSpo2DisplayAlpha = 0.32f;
+constexpr float kSpo2RealtimeMaxJump = 2.5f;
 constexpr float kMinAcceptedBpm = 45.0f;
 constexpr float kMaxAcceptedBpm = 125.0f;
 constexpr int32_t kMinAcceptedSpo2 = 82;
@@ -59,6 +61,9 @@ constexpr uint8_t kCalibrationMinWindows = 1;
 constexpr uint32_t kBeatRealtimeStaleMs = 2500;
 constexpr float kAlgoHrMinQualityRatio = 0.28f;
 constexpr float kAlgoHrMaxDeltaFromDisplay = 15.0f;
+constexpr float kLowHrGuardFloorBpm = 52.0f;
+constexpr uint8_t kLowHrGuardMinConfidence = 40;
+constexpr uint8_t kLowHrGuardConsecutiveRequired = 3;
 constexpr long kFingerDetectThreshold = 50000;
 constexpr uint32_t kIrTargetLow = 75000;
 constexpr uint32_t kIrTargetHigh = 150000;
@@ -76,19 +81,32 @@ constexpr uint8_t kMpuAccelStartReg = 0x3B;
 constexpr uint32_t kMpuReadMs = 100;
 constexpr uint32_t kAlarmContinuousMs = 12000;
 constexpr uint32_t kAlarmMonitorMs = 30000;
-constexpr uint32_t kImpactWindowMs = 1300;
-constexpr uint32_t kStillWindowMs = 700;
+constexpr uint32_t kImpactWindowMsNormal = 1300;
+constexpr uint32_t kStillWindowMsNormal = 700;
+constexpr uint32_t kImpactWindowMsTest = 900;
+constexpr uint32_t kStillWindowMsTest = 550;
 constexpr uint32_t kFallCooldownMs = 3000;
 constexpr uint32_t kAlertBurstIntervalMs = 900;
 constexpr uint32_t kMonitorBurstIntervalMs = 3000;
-constexpr float kFreeFallThresholdG = 0.80f;
-constexpr float kImpactThresholdG = 0.95f;
-constexpr float kImpactRotationThresholdDps = 20.0f;
+constexpr uint32_t kAlertBurstIntervalMsTest = 700;
+constexpr uint32_t kMonitorBurstIntervalMsTest = 2200;
+constexpr float kAlarmToneHighHz = 1320.0f;
+constexpr float kAlarmToneMidHz = 900.0f;
+constexpr float kPromptToneHz = 660.0f;
+constexpr float kFreeFallThresholdGNormal = 0.80f;
+constexpr float kImpactThresholdGNormal = 0.95f;
+constexpr float kImpactRotationThresholdDpsNormal = 20.0f;
+constexpr float kFreeFallThresholdGTest = 0.72f;
+constexpr float kImpactThresholdGTest = 0.90f;
+constexpr float kImpactRotationThresholdDpsTest = 16.0f;
 constexpr float kStillAccelMinG = 0.85f;
 constexpr float kStillAccelMaxG = 1.15f;
 constexpr float kStillGyroThresholdDps = 40.0f;
 constexpr float kRecoveryAccelThresholdG = 1.55f;
 constexpr float kRecoveryGyroThresholdDps = 110.0f;
+constexpr uint32_t kImpactConfirmMinMs = 80;
+constexpr uint32_t kStillConfirmMinMs = 180;
+constexpr uint32_t kAggressiveMotionGuardMs = 220;
 constexpr i2s_port_t kI2sPort = I2S_NUM_0;
 constexpr int kI2sSampleRate = 16000;
 constexpr int kI2sBclkPin = 4;
@@ -111,6 +129,17 @@ constexpr float kMicVadOffFactor = 1.8f;
 constexpr float kMicVadMinOn = 0.012f;
 constexpr float kMicVadMinOff = 0.0065f;
 constexpr uint32_t kMicVadOffHoldMs = 450;
+constexpr uint32_t kMicVadMinTriggerIntervalMs = 1200;
+constexpr uint8_t kMicVadConsecutiveOnFrames = 2;
+constexpr uint8_t kMicVadConsecutiveOffFrames = 2;
+constexpr uint32_t kVoiceListenWindowMs = 4500;
+constexpr uint32_t kSerialCmdPollMs = 120;
+constexpr uint32_t kHealthLogMs = 5000;
+constexpr uint8_t kMpuReadFailReinitThreshold = 6;
+constexpr uint8_t kMicReadFailReinitThreshold = 10;
+constexpr uint8_t kMlxReadFailReinitThreshold = 6;
+constexpr uint32_t kMaxSampleStallMs = 4000;
+constexpr uint8_t kMaxSampleStallReinitThreshold = 2;
 
 enum class SensorState {
   WaitingFinger,
@@ -142,6 +171,24 @@ enum class SystemMode {
   Degraded,
 };
 
+enum class FallProfile {
+  Normal,
+  Test,
+};
+
+enum class VoiceState {
+  Idle,
+  Listen,
+};
+
+enum class GuidanceHint {
+  None,
+  NoFinger,
+  LowPerfusion,
+  Unstable,
+  Spo2Weak,
+};
+
 constexpr uint32_t kEvtFallFreeFall = 1UL << 0;
 constexpr uint32_t kEvtFallImpact = 1UL << 1;
 constexpr uint32_t kEvtFallAlert = 1UL << 2;
@@ -151,6 +198,9 @@ constexpr uint32_t kEvtFingerDetected = 1UL << 5;
 constexpr uint32_t kEvtSensorError = 1UL << 6;
 constexpr uint32_t kEvtSensorRecovered = 1UL << 7;
 constexpr uint32_t kEvtVoiceWakeReserved = 1UL << 8;
+constexpr uint32_t kEvtVoiceListenStart = 1UL << 9;
+constexpr uint32_t kEvtVoiceListenEnd = 1UL << 10;
+constexpr uint32_t kEvtFallProfileChanged = 1UL << 11;
 
 Adafruit_SSD1306 display(kScreenWidth, kScreenHeight, &Wire, -1);
 MAX30105 max30102;
@@ -161,15 +211,20 @@ struct VitalSigns {
   float spo2Percent = 0.0f;
   float heartRateDisplayBpm = 0.0f;
   float heartRateRealtimeBpm = 0.0f;
+  float spo2DisplayPercent = 0.0f;
+  float spo2RealtimePercent = 0.0f;
   bool heartRateValid = false;
   bool spo2Valid = false;
   bool heartRateDisplayValid = false;
   bool heartRateRealtimeValid = false;
+  bool spo2DisplayValid = false;
+  bool spo2RealtimeValid = false;
   bool fingerDetected = false;
   uint32_t lastHrUpdateMs = 0;
   uint32_t lastSpo2UpdateMs = 0;
   uint32_t lastHrBeatAcceptedMs = 0;
   uint32_t lastHrDisplayRefreshMs = 0;
+  uint32_t lastSpo2DisplayRefreshMs = 0;
   uint32_t irValue = 0;
   uint32_t redValue = 0;
 };
@@ -217,6 +272,7 @@ uint8_t g_hrValidStreak = 0;
 uint8_t g_hrInvalidStreak = 0;
 uint8_t g_spo2ValidStreak = 0;
 uint8_t g_spo2InvalidStreak = 0;
+uint8_t g_lowHrCandidateStreak = 0;
 uint32_t g_lastBeatMs = 0;
 uint32_t g_lastFingerSeenMs = 0;
 float g_currentPerfusionIndex = 0.0f;
@@ -230,10 +286,13 @@ uint8_t g_calibrationWindowCount = 0;
 bool g_mpuReady = false;
 bool g_i2sReady = false;
 bool g_micReady = false;
+bool g_speakerActive = false;
 uint8_t g_mpuAddr = 0;
 uint32_t g_lastMpuReadMs = 0;
 uint32_t g_freeFallMs = 0;
 uint32_t g_impactMs = 0;
+uint32_t g_impactCandidateMs = 0;
+uint32_t g_stillSinceMs = 0;
 uint32_t g_alertStartMs = 0;
 uint32_t g_cooldownUntilMs = 0;
 uint32_t g_nextAlarmMs = 0;
@@ -242,6 +301,7 @@ MpuSample g_mpuSample;
 SystemMode g_systemMode = SystemMode::Booting;
 uint32_t g_pendingEvents = 0;
 uint32_t g_lastEventLogMs = 0;
+uint32_t g_lastEventMask = 0;
 bool g_lastFingerEventState = false;
 bool g_sensorFaultLatched = false;
 bool g_voiceActive = false;
@@ -253,6 +313,26 @@ float g_voiceOffThreshold = 0.0f;
 uint32_t g_voiceStartMs = 0;
 uint32_t g_voiceLastUpdateMs = 0;
 uint32_t g_voiceLastActiveMs = 0;
+uint32_t g_lastVoiceWakeMs = 0;
+uint8_t g_voiceOnFrameCount = 0;
+uint8_t g_voiceOffFrameCount = 0;
+VoiceState g_voiceState = VoiceState::Idle;
+uint32_t g_voiceListenUntilMs = 0;
+FallProfile g_fallProfile = FallProfile::Normal;
+uint32_t g_lastSerialCmdPollMs = 0;
+GuidanceHint g_guidanceHint = GuidanceHint::None;
+bool g_pendingPromptTone = false;
+uint8_t g_mpuReadFailStreak = 0;
+uint8_t g_micReadFailStreak = 0;
+uint8_t g_mlxReadFailStreak = 0;
+uint32_t g_i2cErrorCount = 0;
+uint32_t g_lastHealthLogMs = 0;
+uint32_t g_lastLoopMs = 0;
+uint32_t g_loopOverrunCount = 0;
+uint32_t g_lastLoopDurationUs = 0;
+uint32_t g_maxLoopDurationUs = 0;
+uint32_t g_lastMaxSampleMs = 0;
+uint8_t g_maxSampleStallCount = 0;
 
 float medianFromHistory(const float* history, uint8_t count) {
   if (count == 0) {
@@ -291,18 +371,24 @@ void resetMeasurementFilters() {
   g_hrInvalidStreak = 0;
   g_spo2ValidStreak = 0;
   g_spo2InvalidStreak = 0;
+  g_lowHrCandidateStreak = 0;
   g_lastBeatMs = 0;
   g_currentPerfusionIndex = 0.0f;
   g_vitals.heartRateBpm = 0.0f;
   g_vitals.spo2Percent = 0.0f;
   g_vitals.heartRateDisplayBpm = 0.0f;
   g_vitals.heartRateRealtimeBpm = 0.0f;
+  g_vitals.spo2DisplayPercent = 0.0f;
+  g_vitals.spo2RealtimePercent = 0.0f;
   g_vitals.heartRateValid = false;
   g_vitals.spo2Valid = false;
   g_vitals.heartRateDisplayValid = false;
   g_vitals.heartRateRealtimeValid = false;
+  g_vitals.spo2DisplayValid = false;
+  g_vitals.spo2RealtimeValid = false;
   g_vitals.lastHrBeatAcceptedMs = 0;
   g_vitals.lastHrDisplayRefreshMs = 0;
+  g_vitals.lastSpo2DisplayRefreshMs = 0;
 }
 
 void startCalibration(uint32_t now) {
@@ -385,6 +471,23 @@ uint8_t calcSignalConfidence(float qualityRatio, bool hrValid, bool spo2Valid) {
     score += 20;
   }
   return clampConfidence(score);
+}
+
+GuidanceHint evaluateGuidance(float qualityRatio, float perfusionIndex, bool fingerDetected,
+                              float accelMag, float spo2Candidate) {
+  if (!fingerDetected) {
+    return GuidanceHint::NoFinger;
+  }
+  if (qualityRatio < 0.22f || perfusionIndex < (kMinPerfusionIndex * 0.8f)) {
+    return GuidanceHint::LowPerfusion;
+  }
+  if (fabsf(accelMag - 1.0f) > 0.18f) {
+    return GuidanceHint::Unstable;
+  }
+  if (spo2Candidate > 0.0f && spo2Candidate < 90.0f && qualityRatio < 0.35f) {
+    return GuidanceHint::Spo2Weak;
+  }
+  return GuidanceHint::None;
 }
 
 void autoTuneLedAmplitude(uint32_t irDc, uint32_t now) {
@@ -496,6 +599,51 @@ const char* systemModeText(SystemMode mode) {
   return "UNK";
 }
 
+const char* fallProfileText(FallProfile profile) {
+  return (profile == FallProfile::Test) ? "TEST" : "NORMAL";
+}
+
+const char* voiceStateText(VoiceState state) {
+  return (state == VoiceState::Listen) ? "LISTEN" : "IDLE";
+}
+
+const char* guidanceText(GuidanceHint hint) {
+  switch (hint) {
+    case GuidanceHint::None:
+      return "NONE";
+    case GuidanceHint::NoFinger:
+      return "NO_FINGER";
+    case GuidanceHint::LowPerfusion:
+      return "LOW_PI";
+    case GuidanceHint::Unstable:
+      return "UNSTABLE";
+    case GuidanceHint::Spo2Weak:
+      return "SPO2_WEAK";
+  }
+  return "UNK";
+}
+
+float activeFreeFallThresholdG() {
+  return (g_fallProfile == FallProfile::Test) ? kFreeFallThresholdGTest : kFreeFallThresholdGNormal;
+}
+
+float activeImpactThresholdG() {
+  return (g_fallProfile == FallProfile::Test) ? kImpactThresholdGTest : kImpactThresholdGNormal;
+}
+
+float activeImpactRotationThresholdDps() {
+  return (g_fallProfile == FallProfile::Test) ? kImpactRotationThresholdDpsTest
+                                              : kImpactRotationThresholdDpsNormal;
+}
+
+uint32_t activeImpactWindowMs() {
+  return (g_fallProfile == FallProfile::Test) ? kImpactWindowMsTest : kImpactWindowMsNormal;
+}
+
+uint32_t activeStillWindowMs() {
+  return (g_fallProfile == FallProfile::Test) ? kStillWindowMsTest : kStillWindowMsNormal;
+}
+
 void updateSystemModeAndEvents(uint32_t now) {
   const bool fallActive = (g_fallState == FallState::Alert || g_fallState == FallState::Monitor);
   const bool sensorFault = !g_mpuReady || !g_i2sReady || (kEnableMicVad && !g_micReady);
@@ -521,6 +669,7 @@ void updateSystemModeAndEvents(uint32_t now) {
   }
 
   g_lastEventLogMs = now;
+  g_lastEventMask = g_pendingEvents;
   Serial.print("EVT:");
   if (g_pendingEvents & kEvtFallFreeFall) {
     Serial.print(" FREEFALL");
@@ -549,22 +698,39 @@ void updateSystemModeAndEvents(uint32_t now) {
   if (g_pendingEvents & kEvtVoiceWakeReserved) {
     Serial.print(" VOICE_WAKE");
   }
+  if (g_pendingEvents & kEvtVoiceListenStart) {
+    Serial.print(" VOICE_LISTEN_START");
+  }
+  if (g_pendingEvents & kEvtVoiceListenEnd) {
+    Serial.print(" VOICE_LISTEN_END");
+  }
+  if (g_pendingEvents & kEvtFallProfileChanged) {
+    Serial.print(" FALL_PROFILE_CHANGED");
+  }
   Serial.println();
   g_pendingEvents = 0;
 }
 
 void printFallThresholds() {
+  const float ff = activeFreeFallThresholdG();
+  const float imp = activeImpactThresholdG();
+  const float gthr = activeImpactRotationThresholdDps();
+  const uint32_t impWin = activeImpactWindowMs();
+  const uint32_t stillWin = activeStillWindowMs();
+
   Serial.println("Fall thresholds:");
+  Serial.print("  PROFILE: ");
+  Serial.println(fallProfileText(g_fallProfile));
   Serial.print("  FREEFALL: M < ");
-  Serial.print(kFreeFallThresholdG, 2);
+  Serial.print(ff, 2);
   Serial.println("g");
   Serial.print("  IMPACT: M > ");
-  Serial.print(kImpactThresholdG, 2);
+  Serial.print(imp, 2);
   Serial.print("g and Gmax > ");
-  Serial.print(kImpactRotationThresholdDps, 0);
+  Serial.print(gthr, 0);
   Serial.println(" dps");
   Serial.print("  IMPACT window: ");
-  Serial.print(kImpactWindowMs);
+  Serial.print(impWin);
   Serial.println(" ms");
   Serial.print("  STILL: M in [");
   Serial.print(kStillAccelMinG, 2);
@@ -574,8 +740,90 @@ void printFallThresholds() {
   Serial.print(kStillGyroThresholdDps, 0);
   Serial.println(" dps");
   Serial.print("  STILL window: ");
-  Serial.print(kStillWindowMs);
+  Serial.print(stillWin);
   Serial.println(" ms");
+}
+
+void setFallProfile(FallProfile profile, bool announce = true) {
+  if (g_fallProfile == profile) {
+    return;
+  }
+  g_fallProfile = profile;
+  publishEvent(kEvtFallProfileChanged);
+  if (announce) {
+    Serial.print("Fall profile set to ");
+    Serial.println(fallProfileText(g_fallProfile));
+    printFallThresholds();
+  }
+  g_pendingPromptTone = true;
+}
+
+void pollSerialCommands(uint32_t now) {
+  if ((now - g_lastSerialCmdPollMs) < kSerialCmdPollMs || !Serial.available()) {
+    return;
+  }
+  g_lastSerialCmdPollMs = now;
+
+  String cmd = Serial.readStringUntil('\n');
+  cmd.trim();
+  cmd.toUpperCase();
+
+  if (cmd == "MODE TEST" || cmd == "FALL TEST") {
+    setFallProfile(FallProfile::Test);
+  } else if (cmd == "MODE NORMAL" || cmd == "FALL NORMAL") {
+    setFallProfile(FallProfile::Normal);
+  } else if (cmd == "MODE?" || cmd == "FALL?") {
+    Serial.print("Fall profile=");
+    Serial.println(fallProfileText(g_fallProfile));
+  } else if (cmd == "HELP") {
+    Serial.println("Commands: MODE TEST | MODE NORMAL | MODE? | FALL? | HEALTH?");
+  } else if (cmd == "HEALTH?") {
+    Serial.print("Health i2cErr=");
+    Serial.print(g_i2cErrorCount);
+    Serial.print(" mpuFail=");
+    Serial.print(g_mpuReadFailStreak);
+    Serial.print(" micFail=");
+    Serial.print(g_micReadFailStreak);
+    Serial.print(" mlxFail=");
+    Serial.print(g_mlxReadFailStreak);
+    Serial.print(" loopUs=");
+    Serial.print(g_lastLoopDurationUs);
+    Serial.print(" loopUsMax=");
+    Serial.print(g_maxLoopDurationUs);
+    Serial.print(" overrun=");
+    Serial.println(g_loopOverrunCount);
+  }
+}
+
+void updateHealthSnapshot(uint32_t now, uint32_t loopStartUs) {
+  const uint32_t duration = micros() - loopStartUs;
+  g_lastLoopDurationUs = duration;
+  g_lastLoopMs = now;
+  if (duration > g_maxLoopDurationUs) {
+    g_maxLoopDurationUs = duration;
+  }
+  if (duration > 20000U) {
+    ++g_loopOverrunCount;
+  }
+
+  if ((now - g_lastHealthLogMs) < kHealthLogMs) {
+    return;
+  }
+  g_lastHealthLogMs = now;
+  Serial.print("HLTH loopUs=");
+  Serial.print(g_lastLoopDurationUs);
+  Serial.print(" maxUs=");
+  Serial.print(g_maxLoopDurationUs);
+  Serial.print(" i2cErr=");
+  Serial.print(g_i2cErrorCount);
+  Serial.print(" mpuFail=");
+  Serial.print(g_mpuReadFailStreak);
+  Serial.print(" mlxFail=");
+  Serial.print(g_mlxReadFailStreak);
+  Serial.print(" micFail=");
+  Serial.print(g_micReadFailStreak);
+  Serial.print(" overrun=");
+  Serial.println(g_loopOverrunCount);
 }
 
 const char* qualityUiText(SignalQuality quality) {
@@ -592,6 +840,22 @@ const char* qualityUiText(SignalQuality quality) {
       return "FAIR";
     case SignalQuality::Good:
       return "GOOD";
+  }
+  return "UNK";
+}
+
+const char* guidanceUiText(GuidanceHint hint) {
+  switch (hint) {
+    case GuidanceHint::None:
+      return "OK";
+    case GuidanceHint::NoFinger:
+      return "FNG";
+    case GuidanceHint::LowPerfusion:
+      return "PI";
+    case GuidanceHint::Unstable:
+      return "MOV";
+    case GuidanceHint::Spo2Weak:
+      return "O2";
   }
   return "UNK";
 }
@@ -644,6 +908,9 @@ bool i2cProbe(uint8_t addr, uint8_t* errOut = nullptr) {
   if (errOut != nullptr) {
     *errOut = err;
   }
+  if (err != 0) {
+    ++g_i2cErrorCount;
+  }
   return err == 0;
 }
 
@@ -658,12 +925,14 @@ bool mpuReadBytes(uint8_t addr, uint8_t reg, uint8_t* buf, size_t len) {
   Wire.beginTransmission(addr);
   Wire.write(reg);
   if (Wire.endTransmission(false) != 0) {
+    ++g_i2cErrorCount;
     return false;
   }
 
   const size_t got = Wire.requestFrom(static_cast<int>(addr), static_cast<int>(len),
                                       static_cast<int>(true));
   if (got != len) {
+    ++g_i2cErrorCount;
     return false;
   }
 
@@ -778,6 +1047,8 @@ void initMax30102() {
   max30102.setPulseAmplitudeRed(g_ledAmplitude);
   max30102.setPulseAmplitudeIR(g_ledAmplitude);
   max30102.setPulseAmplitudeGreen(0);
+  g_lastMaxSampleMs = millis();
+  g_maxSampleStallCount = 0;
 
   Serial.println("MAX30102 initialized");
 }
@@ -864,12 +1135,52 @@ void initI2sAudio() {
   if (i2s_driver_install(kI2sPort, &config, 0, nullptr) == ESP_OK &&
       i2s_set_pin(kI2sPort, &pins) == ESP_OK) {
     i2s_zero_dma_buffer(kI2sPort);
+    i2s_stop(kI2sPort);
     g_i2sReady = true;
+    g_speakerActive = false;
     Serial.println("MAX98357 I2S init OK");
+    Serial.println("Speaker muted by default (non-alert mode)");
   } else {
     g_i2sReady = false;
+    g_speakerActive = false;
     Serial.println("MAX98357 I2S init failed");
   }
+}
+
+void forceSpeakerPinsLow() {
+  pinMode(kI2sBclkPin, OUTPUT);
+  pinMode(kI2sLrcPin, OUTPUT);
+  pinMode(kI2sDinPin, OUTPUT);
+  digitalWrite(kI2sBclkPin, LOW);
+  digitalWrite(kI2sLrcPin, LOW);
+  digitalWrite(kI2sDinPin, LOW);
+}
+
+void ensureSpeakerActive() {
+  if (!g_i2sReady || g_speakerActive) {
+    return;
+  }
+
+  const i2s_pin_config_t pins = {
+      .bck_io_num = kI2sBclkPin,
+      .ws_io_num = kI2sLrcPin,
+      .data_out_num = kI2sDinPin,
+      .data_in_num = I2S_PIN_NO_CHANGE,
+  };
+  i2s_set_pin(kI2sPort, &pins);
+  i2s_zero_dma_buffer(kI2sPort);
+  i2s_start(kI2sPort);
+  g_speakerActive = true;
+}
+
+void ensureSpeakerMuted() {
+  if (!g_i2sReady || !g_speakerActive) {
+    return;
+  }
+  i2s_zero_dma_buffer(kI2sPort);
+  i2s_stop(kI2sPort);
+  forceSpeakerPinsLow();
+  g_speakerActive = false;
 }
 
 void initMicI2s() {
@@ -931,8 +1242,17 @@ void updateVoiceVad(uint32_t now) {
   const esp_err_t err =
       i2s_read(kMicI2sPort, raw, sizeof(raw), &bytesRead, pdMS_TO_TICKS(12));
   if (err != ESP_OK || bytesRead == 0) {
+    if (g_micReadFailStreak < 255) {
+      ++g_micReadFailStreak;
+    }
+    if (g_micReadFailStreak >= kMicReadFailReinitThreshold) {
+      Serial.println("Mic VAD read fail streak, reinit...");
+      initMicI2s();
+      g_micReadFailStreak = 0;
+    }
     return;
   }
+  g_micReadFailStreak = 0;
 
   const size_t samples = bytesRead / sizeof(int32_t);
   if (samples == 0) {
@@ -964,21 +1284,50 @@ void updateVoiceVad(uint32_t now) {
   g_voiceOnThreshold = std::max(kMicVadMinOn, g_voiceNoiseFloor * kMicVadOnFactor);
   g_voiceOffThreshold = std::max(kMicVadMinOff, g_voiceNoiseFloor * kMicVadOffFactor);
 
-  if (!g_voiceActive && g_voiceCalibrated && g_voiceRms >= g_voiceOnThreshold) {
+  const bool aboveOn = g_voiceCalibrated && (g_voiceRms >= g_voiceOnThreshold);
+  const bool belowOff = g_voiceRms < g_voiceOffThreshold;
+  if (aboveOn) {
+    if (g_voiceOnFrameCount < 255) {
+      ++g_voiceOnFrameCount;
+    }
+    g_voiceOffFrameCount = 0;
+  } else if (belowOff) {
+    if (g_voiceOffFrameCount < 255) {
+      ++g_voiceOffFrameCount;
+    }
+    g_voiceOnFrameCount = 0;
+  }
+
+  if (!g_voiceActive && g_voiceOnFrameCount >= kMicVadConsecutiveOnFrames) {
     g_voiceActive = true;
     g_voiceLastActiveMs = now;
-    publishEvent(kEvtVoiceWakeReserved);
+    if ((now - g_lastVoiceWakeMs) >= kMicVadMinTriggerIntervalMs) {
+      g_lastVoiceWakeMs = now;
+      publishEvent(kEvtVoiceWakeReserved);
+      if (g_voiceState == VoiceState::Idle) {
+        g_voiceState = VoiceState::Listen;
+        g_voiceListenUntilMs = now + kVoiceListenWindowMs;
+        publishEvent(kEvtVoiceListenStart);
+      }
+    }
   } else if (g_voiceActive) {
-    if (g_voiceRms >= g_voiceOffThreshold) {
+    if (!belowOff) {
       g_voiceLastActiveMs = now;
-    } else if (now - g_voiceLastActiveMs > kMicVadOffHoldMs) {
+      g_voiceOffFrameCount = 0;
+    } else if (g_voiceOffFrameCount >= kMicVadConsecutiveOffFrames &&
+               now - g_voiceLastActiveMs > kMicVadOffHoldMs) {
       g_voiceActive = false;
     }
+  }
+
+  if (g_voiceState == VoiceState::Listen && now >= g_voiceListenUntilMs) {
+    g_voiceState = VoiceState::Idle;
+    publishEvent(kEvtVoiceListenEnd);
   }
 }
 
 void playTone(float frequencyHz, uint16_t durationMs, float amplitude = 0.35f) {
-  if (!g_i2sReady) {
+  if (!g_i2sReady || !g_speakerActive) {
     return;
   }
 
@@ -1002,7 +1351,7 @@ void playTone(float frequencyHz, uint16_t durationMs, float amplitude = 0.35f) {
 }
 
 void playSilence(uint16_t durationMs) {
-  if (!g_i2sReady) {
+  if (!g_i2sReady || !g_speakerActive) {
     delay(durationMs);
     return;
   }
@@ -1020,11 +1369,20 @@ void playSilence(uint16_t durationMs) {
   }
 }
 
-void playAlarmBurst() {
-  playTone(880.0f, 160);
-  playSilence(70);
-  playTone(1320.0f, 180);
-  playSilence(120);
+void playAlarmBurst(bool monitorPhase) {
+  const bool testProfile = (g_fallProfile == FallProfile::Test);
+  const float first = monitorPhase ? kAlarmToneMidHz : (testProfile ? 1100.0f : kAlarmToneMidHz);
+  const float second = monitorPhase ? (kAlarmToneMidHz + 260.0f) : kAlarmToneHighHz;
+  const uint16_t t1 = monitorPhase ? 120 : (testProfile ? 140 : 160);
+  const uint16_t t2 = monitorPhase ? 140 : (testProfile ? 160 : 180);
+  playTone(first, t1);
+  playSilence(60);
+  playTone(second, t2);
+  playSilence(testProfile ? 90 : 120);
+}
+
+void playPromptTone() {
+  playTone(kPromptToneHz, 90, 0.22f);
 }
 
 void initMlx90614(bool verbose = true) {
@@ -1157,6 +1515,7 @@ void updateTemperature() {
     const float ambient = mlx90614.readAmbientTempC();
     const float object = mlx90614.readObjectTempC();
     if (isfinite(ambient) && isfinite(object)) {
+      g_mlxReadFailStreak = 0;
       g_temperature.ambientC = ambient;
       g_temperature.objectC = object;
       g_temperature.valid = true;
@@ -1167,6 +1526,14 @@ void updateTemperature() {
 
     g_temperature.valid = false;
     g_temperature.fromMax30102Die = false;
+    if (g_mlxReadFailStreak < 255) {
+      ++g_mlxReadFailStreak;
+    }
+    if (g_mlxReadFailStreak >= kMlxReadFailReinitThreshold) {
+      Serial.println("MLX read unstable, reinit...");
+      initMlx90614(false);
+      g_mlxReadFailStreak = 0;
+    }
     return;
   }
 
@@ -1201,6 +1568,7 @@ void updateTemperature() {
   } else {
     g_temperature.valid = false;
     g_temperature.fromMax30102Die = false;
+    ++g_i2cErrorCount;
   }
 }
 
@@ -1212,8 +1580,17 @@ void readMpuSample() {
 
   uint8_t buf[14] = {0};
   if (!mpuReadBytes(g_mpuAddr, kMpuAccelStartReg, buf, sizeof(buf))) {
+    if (g_mpuReadFailStreak < 255) {
+      ++g_mpuReadFailStreak;
+    }
+    if (g_mpuReadFailStreak >= kMpuReadFailReinitThreshold) {
+      Serial.println("MPU read fail streak, reinit...");
+      initMpu6050();
+      g_mpuReadFailStreak = 0;
+    }
     return;
   }
+  g_mpuReadFailStreak = 0;
 
   const int16_t axRaw = mpuReadInt16(buf, 0);
   const int16_t ayRaw = mpuReadInt16(buf, 2);
@@ -1242,6 +1619,11 @@ void updateFallState(uint32_t now) {
     return;
   }
   const FallState prevState = g_fallState;
+  const float ffThr = activeFreeFallThresholdG();
+  const float impactThr = activeImpactThresholdG();
+  const float impactRotThr = activeImpactRotationThresholdDps();
+  const uint32_t impactWinMs = activeImpactWindowMs();
+  const uint32_t stillWinMs = activeStillWindowMs();
 
   const bool stillNow = g_mpuSample.accelMagG >= kStillAccelMinG &&
                         g_mpuSample.accelMagG <= kStillAccelMaxG &&
@@ -1251,21 +1633,30 @@ void updateFallState(uint32_t now) {
 
   switch (g_fallState) {
     case FallState::Normal:
-      if (now >= g_cooldownUntilMs && g_mpuSample.accelMagG < kFreeFallThresholdG) {
+      if (now >= g_cooldownUntilMs && g_mpuSample.accelMagG < ffThr) {
         g_fallState = FallState::FreeFall;
         g_freeFallMs = now;
+        g_impactCandidateMs = 0;
       }
       break;
 
     case FallState::FreeFall:
-      if (now - g_freeFallMs > kImpactWindowMs) {
+      if (now - g_freeFallMs > impactWinMs) {
         g_fallState = FallState::Normal;
-      } else if (g_mpuSample.accelMagG > kImpactThresholdG &&
-                 g_mpuSample.gyroMaxDps > kImpactRotationThresholdDps) {
-        g_fallState = FallState::Impact;
-        g_impactMs = now;
+      } else if (g_mpuSample.accelMagG > impactThr && g_mpuSample.gyroMaxDps > impactRotThr) {
+        if (g_impactCandidateMs == 0) {
+          g_impactCandidateMs = now;
+        }
+        if ((now - g_impactCandidateMs) >= kImpactConfirmMinMs &&
+            (now - g_freeFallMs) >= kAggressiveMotionGuardMs) {
+          g_fallState = FallState::Impact;
+          g_impactMs = now;
+          g_stillSinceMs = 0;
+        }
       } else if (g_mpuSample.accelMagG > 0.90f) {
         g_fallState = FallState::Normal;
+      } else {
+        g_impactCandidateMs = 0;
       }
       break;
 
@@ -1273,12 +1664,19 @@ void updateFallState(uint32_t now) {
       if (recoveredNow) {
         g_fallState = FallState::Normal;
         g_cooldownUntilMs = now + kFallCooldownMs;
-      } else if (now - g_impactMs > kStillWindowMs && stillNow) {
-        g_fallState = FallState::Alert;
-        g_alertStartMs = now;
-        g_nextAlarmMs = now;
+      } else if (stillNow) {
+        if (g_stillSinceMs == 0) {
+          g_stillSinceMs = now;
+        }
+        if ((now - g_impactMs) > stillWinMs && (now - g_stillSinceMs) > kStillConfirmMinMs) {
+          g_fallState = FallState::Alert;
+          g_alertStartMs = now;
+          g_nextAlarmMs = now;
+        }
       } else if (now - g_impactMs > 3000U) {
         g_fallState = FallState::Normal;
+      } else {
+        g_stillSinceMs = 0;
       }
       break;
 
@@ -1323,26 +1721,47 @@ void updateAlarm(uint32_t now) {
     return;
   }
 
+  const bool alarmActive = (g_fallState == FallState::Alert || g_fallState == FallState::Monitor);
+  if (!alarmActive) {
+    if (g_pendingPromptTone) {
+      ensureSpeakerActive();
+      playPromptTone();
+      g_pendingPromptTone = false;
+    } else {
+      ensureSpeakerMuted();
+    }
+    return;
+  }
+
+  // Fall alarm has highest priority and preempts any lower-priority prompt.
+  g_pendingPromptTone = false;
+  ensureSpeakerActive();
+
   if (g_fallState == FallState::Alert && now >= g_nextAlarmMs) {
-    playAlarmBurst();
-    g_nextAlarmMs = now + kAlertBurstIntervalMs;
+    playAlarmBurst(false);
+    g_nextAlarmMs = now + ((g_fallProfile == FallProfile::Test) ? kAlertBurstIntervalMsTest
+                                                                 : kAlertBurstIntervalMs);
     return;
   }
 
   if (g_fallState == FallState::Monitor && now >= g_nextAlarmMs) {
-    playAlarmBurst();
-    g_nextAlarmMs = now + kMonitorBurstIntervalMs;
+    playAlarmBurst(true);
+    g_nextAlarmMs = now + ((g_fallProfile == FallProfile::Test) ? kMonitorBurstIntervalMsTest
+                                                                 : kMonitorBurstIntervalMs);
   }
 }
 
 void updateSensor() {
+  bool consumedAnySample = false;
   max30102.check();
 
   while (max30102.available()) {
+    consumedAnySample = true;
     const uint32_t now = millis();
     const uint32_t ir = max30102.getFIFOIR();
     const uint32_t red = max30102.getFIFORed();
     max30102.nextSample();
+    g_lastMaxSampleMs = now;
 
     g_vitals.irValue = ir;
     g_vitals.redValue = red;
@@ -1360,6 +1779,7 @@ void updateSensor() {
       g_sensorState = SensorState::WaitingFinger;
       g_calibrationPiSum = 0.0f;
       g_calibrationWindowCount = 0;
+      g_guidanceHint = GuidanceHint::NoFinger;
       resetMeasurementFilters();
       continue;
     }
@@ -1419,6 +1839,8 @@ void updateSensor() {
           perfusionIndex / std::max(g_calibratedPerfusionIndex, kMinPerfusionIndex);
       const bool signalQualityOk = perfusionIndex >= kMinPerfusionIndex;
       g_signalConfidence = calcSignalConfidence(qualityRatio, g_vitals.heartRateValid, g_vitals.spo2Valid);
+      g_guidanceHint =
+          evaluateGuidance(qualityRatio, perfusionIndex, g_vitals.fingerDetected, g_mpuSample.accelMagG, 0.0f);
       autoTuneLedAmplitude(irDcU32, now);
 
       if (g_sensorState == SensorState::Calibrating) {
@@ -1450,7 +1872,25 @@ void updateSensor() {
           jumpOk = fabsf(algoBpm - g_vitals.heartRateBpm) <= (kMaxHrJumpPerUpdate + 12.0f);
         }
         if (jumpOk && g_vitals.heartRateDisplayValid) {
-          jumpOk = fabsf(algoBpm - g_vitals.heartRateDisplayBpm) <= kAlgoHrMaxDeltaFromDisplay;
+          const float displayDeltaLimit =
+              (g_signalConfidence < kLowHrGuardMinConfidence) ? 10.0f : kAlgoHrMaxDeltaFromDisplay;
+          jumpOk = fabsf(algoBpm - g_vitals.heartRateDisplayBpm) <= displayDeltaLimit;
+        }
+
+        if (jumpOk && algoBpm < kLowHrGuardFloorBpm) {
+          if (g_signalConfidence < kLowHrGuardMinConfidence) {
+            jumpOk = false;
+          } else {
+            if (g_lowHrCandidateStreak < 255) {
+              ++g_lowHrCandidateStreak;
+            }
+            if (g_lowHrCandidateStreak < kLowHrGuardConsecutiveRequired &&
+                g_vitals.heartRateDisplayValid) {
+              jumpOk = false;
+            }
+          }
+        } else if (algoBpm >= kLowHrGuardFloorBpm) {
+          g_lowHrCandidateStreak = 0;
         }
 
         if (jumpOk) {
@@ -1475,9 +1915,23 @@ void updateSensor() {
             }
             g_vitals.heartRateDisplayValid = true;
             g_vitals.lastHrDisplayRefreshMs = now;
-          }
-        }
-      }
+    }
+  }
+
+  const uint32_t now = millis();
+  if (!consumedAnySample && (now - g_lastMaxSampleMs) > kMaxSampleStallMs) {
+    if (g_maxSampleStallCount < 255) {
+      ++g_maxSampleStallCount;
+    }
+    if (g_maxSampleStallCount >= kMaxSampleStallReinitThreshold) {
+      Serial.println("MAX30102 sample stall, reinit...");
+      initMax30102();
+      g_maxSampleStallCount = 0;
+      publishEvent(kEvtSensorRecovered);
+    }
+    g_lastMaxSampleMs = now;
+  }
+}
 
       float fallbackSpo2 = 0.0f;
       const bool fallbackSpo2Valid =
@@ -1529,23 +1983,69 @@ void updateSensor() {
                 (1.0f - kSpo2EwmaAlpha) * g_vitals.spo2Percent + kSpo2EwmaAlpha * spo2Median;
             g_vitals.lastSpo2UpdateMs = now;
           }
+
+          float spo2Realtime = spo2Candidate;
+          if (g_vitals.spo2RealtimeValid) {
+            const float delta = spo2Realtime - g_vitals.spo2RealtimePercent;
+            if (fabsf(delta) > kSpo2RealtimeMaxJump) {
+              spo2Realtime = g_vitals.spo2RealtimePercent +
+                             ((delta > 0.0f) ? kSpo2RealtimeMaxJump : -kSpo2RealtimeMaxJump);
+            }
+          }
+          g_vitals.spo2RealtimePercent = spo2Realtime;
+          g_vitals.spo2RealtimeValid = true;
+
+          if (!g_vitals.spo2DisplayValid) {
+            g_vitals.spo2DisplayPercent = spo2Realtime;
+          } else {
+            g_vitals.spo2DisplayPercent =
+                (1.0f - kSpo2DisplayAlpha) * g_vitals.spo2DisplayPercent +
+                kSpo2DisplayAlpha * spo2Realtime;
+          }
+          g_vitals.spo2DisplayValid = true;
+          g_vitals.lastSpo2DisplayRefreshMs = now;
         } else {
           g_spo2ValidStreak = 0;
           if (g_spo2InvalidStreak < 255) {
-            ++g_spo2InvalidStreak;
+            g_spo2InvalidStreak += (qualityRatio < 0.3f) ? 1 : 2;
+            if (g_spo2InvalidStreak > 255) {
+              g_spo2InvalidStreak = 255;
+            }
+          }
+          if (g_vitals.spo2DisplayValid && qualityRatio < 0.30f) {
+            g_vitals.spo2DisplayPercent =
+                std::max(82.0f, g_vitals.spo2DisplayPercent - 0.12f);
+            g_vitals.lastSpo2DisplayRefreshMs = now;
           }
         }
       } else {
         g_spo2ValidStreak = 0;
         if (g_spo2InvalidStreak < 255) {
-          ++g_spo2InvalidStreak;
+          g_spo2InvalidStreak += (qualityRatio < 0.3f) ? 1 : 2;
+          if (g_spo2InvalidStreak > 255) {
+            g_spo2InvalidStreak = 255;
+          }
         }
+        if (g_vitals.spo2DisplayValid && qualityRatio < 0.30f) {
+          g_vitals.spo2DisplayPercent =
+              std::max(82.0f, g_vitals.spo2DisplayPercent - 0.14f);
+          g_vitals.lastSpo2DisplayRefreshMs = now;
+        }
+      }
+
+      if (g_guidanceHint == GuidanceHint::None) {
+        g_guidanceHint = evaluateGuidance(qualityRatio, perfusionIndex, g_vitals.fingerDetected,
+                                          g_mpuSample.accelMagG, spo2CandidateReady ? spo2Candidate : 0.0f);
       }
 
       if (g_spo2InvalidStreak >= kInvalidStreakDrop &&
           (now - g_vitals.lastSpo2UpdateMs) > kSpo2DisplayHoldMs) {
         g_vitals.spo2Valid = false;
         g_vitals.spo2Percent = 0.0f;
+        g_vitals.spo2DisplayValid = false;
+        g_vitals.spo2RealtimeValid = false;
+        g_vitals.spo2DisplayPercent = 0.0f;
+        g_vitals.spo2RealtimePercent = 0.0f;
       }
     }
 
@@ -1558,6 +2058,28 @@ void updateSensor() {
           if (accepted && g_vitals.heartRateValid &&
               fabsf(bpm - g_vitals.heartRateBpm) > kMaxHrJumpPerUpdate) {
             accepted = false;
+          }
+          if (accepted && g_vitals.heartRateDisplayValid) {
+            const float displayDeltaLimit =
+                (g_signalConfidence < kLowHrGuardMinConfidence) ? 10.0f : kMaxHrJumpPerUpdate;
+            if (fabsf(bpm - g_vitals.heartRateDisplayBpm) > displayDeltaLimit) {
+              accepted = false;
+            }
+          }
+          if (accepted && bpm < kLowHrGuardFloorBpm) {
+            if (g_signalConfidence < kLowHrGuardMinConfidence) {
+              accepted = false;
+            } else {
+              if (g_lowHrCandidateStreak < 255) {
+                ++g_lowHrCandidateStreak;
+              }
+              if (g_lowHrCandidateStreak < kLowHrGuardConsecutiveRequired &&
+                  g_vitals.heartRateDisplayValid) {
+                accepted = false;
+              }
+            }
+          } else if (bpm >= kLowHrGuardFloorBpm) {
+            g_lowHrCandidateStreak = 0;
           }
 
           if (accepted) {
@@ -1630,6 +2152,14 @@ void updateSensor() {
     g_vitals.spo2Valid = false;
     g_vitals.spo2Percent = 0.0f;
   }
+
+  if (g_vitals.fingerDetected && g_vitals.spo2DisplayValid &&
+      (millis() - g_vitals.lastSpo2DisplayRefreshMs) > kSpo2DisplayHoldMs) {
+    g_vitals.spo2DisplayValid = false;
+    g_vitals.spo2RealtimeValid = false;
+    g_vitals.spo2DisplayPercent = 0.0f;
+    g_vitals.spo2RealtimePercent = 0.0f;
+  }
 }
 
 void renderUi() {
@@ -1656,8 +2186,8 @@ void renderUi() {
   }
 
   display.setCursor(70, 10);
-  if (g_vitals.spo2Valid) {
-    display.print(static_cast<int>(lroundf(g_vitals.spo2Percent)));
+  if (g_vitals.spo2DisplayValid) {
+    display.print(static_cast<int>(lroundf(g_vitals.spo2DisplayPercent)));
     display.setTextSize(1);
     display.print("%");
     display.setTextSize(2);
@@ -1686,6 +2216,9 @@ void renderUi() {
 
   display.setCursor(72, 44);
   display.print(fallStateUiText(g_fallState));
+  display.setTextSize(1);
+  display.setCursor(72, 58);
+  display.print(guidanceUiText(g_guidanceHint));
 
   display.display();
 
@@ -1701,8 +2234,21 @@ void renderUi() {
     Serial.print("--");
   }
   Serial.print(" O2=");
-  if (g_vitals.spo2Valid) {
-    Serial.print(g_vitals.spo2Percent, 1);
+  if (g_vitals.spo2DisplayValid) {
+    Serial.print(g_vitals.spo2DisplayPercent, 1);
+    Serial.print("%");
+  } else {
+    Serial.print("--%");
+  }
+  Serial.print(" HRr=");
+  if (g_vitals.heartRateRealtimeValid) {
+    Serial.print(g_vitals.heartRateRealtimeBpm, 1);
+  } else {
+    Serial.print("--");
+  }
+  Serial.print(" O2r=");
+  if (g_vitals.spo2RealtimeValid) {
+    Serial.print(g_vitals.spo2RealtimePercent, 1);
     Serial.print("%");
   } else {
     Serial.print("--%");
@@ -1716,16 +2262,18 @@ void renderUi() {
   Serial.print(" F=");
   Serial.print(fallStateText(g_fallState));
   Serial.print(" Thr(FF<");
-  Serial.print(kFreeFallThresholdG, 2);
+  Serial.print(activeFreeFallThresholdG(), 2);
   Serial.print(" IMP>");
-  Serial.print(kImpactThresholdG, 2);
+  Serial.print(activeImpactThresholdG(), 2);
   Serial.print(" G>");
-  Serial.print(kImpactRotationThresholdDps, 0);
+  Serial.print(activeImpactRotationThresholdDps(), 0);
   Serial.print(")");
   Serial.print(" Q=");
   Serial.print(qualityText(currentSignalQuality()));
   Serial.print(" C=");
   Serial.print(g_signalConfidence);
+  Serial.print(" H=");
+  Serial.print(guidanceText(g_guidanceHint));
   Serial.print(" S=");
   Serial.print(sensorStateText());
   Serial.print(" LED=0x");
@@ -1735,6 +2283,8 @@ void renderUi() {
   Serial.print(g_ledAmplitude, HEX);
   Serial.print(" M=");
   Serial.print(systemModeText(g_systemMode));
+  Serial.print("/");
+  Serial.print(fallProfileText(g_fallProfile));
   if (kEnableMicVad) {
     Serial.print(" V=");
     if (!g_voiceCalibrated) {
@@ -1744,7 +2294,17 @@ void renderUi() {
     }
     Serial.print(" VRMS=");
     Serial.print(g_voiceRms, 3);
+    Serial.print(" VS=");
+    Serial.print(voiceStateText(g_voiceState));
   }
+  Serial.print(" E=");
+  Serial.print(g_i2cErrorCount);
+  Serial.print("/");
+  Serial.print(g_mpuReadFailStreak);
+  Serial.print("/");
+  Serial.print(g_mlxReadFailStreak);
+  Serial.print("/");
+  Serial.print(g_micReadFailStreak);
   Serial.print(" Src=");
   if (g_temperature.valid) {
     Serial.print(g_temperature.fromMax30102Die ? "MAX" : "MLX");
@@ -1759,7 +2319,9 @@ void setup() {
   Serial.begin(115200);
   delay(300);
   Serial.println("Booting ESP32 AI Health Assistant...");
+  g_fallProfile = FallProfile::Normal;
   printFallThresholds();
+  Serial.println("Cmd: MODE TEST | MODE NORMAL | MODE? | HEALTH?");
 
   initI2c();
   i2cScan();
@@ -1784,7 +2346,9 @@ void setup() {
 }
 
 void loop() {
+  const uint32_t loopStartUs = micros();
   const uint32_t now = millis();
+  pollSerialCommands(now);
   updateSensor();
   if (now - g_lastMpuReadMs >= kMpuReadMs) {
     g_lastMpuReadMs = now;
@@ -1796,4 +2360,5 @@ void loop() {
   updateTemperature();
   updateSystemModeAndEvents(now);
   renderUi();
+  updateHealthSnapshot(now, loopStartUs);
 }
