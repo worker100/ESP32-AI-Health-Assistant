@@ -501,3 +501,27 @@
   - 新增 `printFallThresholds()`：开机串口打印完整跌倒判定阈值。
   - 串口状态行新增 `Thr(FF<... IMP>... G>...)`，便于现场调参对照。
 - MPU 独立测试程序（`firmware/src/mpu6050_oled_test.cpp`）同步做了更温和测试阈值调整，便于桌面跌落调试。
+
+## 31. 2026-03-13 豆包 Realtime API 接入决策（S2S Voice Assistant Plan）
+- 目标对齐：
+  - 下一阶段语音助手采用“端到端实时语音”路线，打通 `语音输入 -> 模型理解 -> 语音回复` 闭环。
+- 已确认接口：
+  - 豆包端到端实时语音大模型 Realtime API（WebSocket）
+  - 文档链接：`https://www.volcengine.com/docs/6561/1594356?lang=zh`
+  - WS URL：`wss://openspeech.bytedance.com/api/v3/realtime/dialogue`
+- 已确认关键参数：
+  - `X-Api-App-ID`（控制台获取）
+  - `X-Api-Access-Key`（控制台获取）
+  - `X-Api-Resource-Id = volc.speech.dialog`（固定）
+  - `X-Api-App-Key = PlgvMymc7f3tQnJ6`（固定，按当前文档）
+  - `StartSession.model` 必传，首选：`1.2.1.0`（O2.0）
+  - TTS `speaker` 首选：`zh_female_vv_jupiter_bigtts`
+- 音频参数基线：
+  - 上行：`PCM 16kHz / 单声道 / int16`
+  - 下行：优先 `pcm_s16le 24kHz / 单声道`
+- 工程落地策略：
+  - 先做“最小可用闭环”（StartSession + TaskRequest + TTSResponse）
+  - 后做增强：打断播报、上下文管理、RAG/联网、音色与人设优化
+  - 建议架构：ESP32负责采集与播放，中间服务负责WS协议与会话编排
+- 关联文档：
+  - 详见 `docs/DOUBAO_REALTIME_API_NOTES.md`
