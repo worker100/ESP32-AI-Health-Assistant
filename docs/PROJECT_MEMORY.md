@@ -525,3 +525,150 @@
   - 建议架构：ESP32负责采集与播放，中间服务负责WS协议与会话编排
 - 关联文档：
   - 详见 `docs/DOUBAO_REALTIME_API_NOTES.md`
+
+## 32. 2026-03-13 语音助手端云协同架构冻结（Edge + Local Backend + Doubao）
+- 架构结论：
+  - 设备端不直接实现豆包二进制 WebSocket 协议。
+  - 当前推荐拓扑固定为：
+    - `ESP32-S3 <-> 本地后端服务（电脑） <-> Doubao Realtime API`
+- 原因：
+  - ESP32 适合做音频采集、播放、状态机、OLED 显示和传感器控制；
+  - 不适合承载复杂的云端会话编排、凭证管理和实时二进制协议调试；
+  - 后端保管凭证、做转发和日志，更利于稳定开发与后续替换模型服务。
+- 当前硬件映射（语音相关）：
+  - INMP441：
+    - `GPIO15` = BCLK
+    - `GPIO16` = WS
+    - `GPIO17` = DATA
+  - MAX98357A：
+    - `GPIO4` = BCLK
+    - `GPIO5` = LRC
+    - `GPIO6` = DIN
+- 数据流基线：
+  - 上行音频：`16kHz / 单声道 / PCM s16le / 20ms一包`
+  - 下行音频：优先 `24kHz / 单声道 / PCM s16le`
+- 设备端职责：
+  - 本地 VAD / 唤醒门控
+  - 本地会话状态机
+  - 上传音频到本地后端
+  - 播放后端返回的 TTS 音频
+  - OLED / 串口显示语音状态
+- 本地后端职责：
+  - 连接 Doubao Realtime API
+  - 转发 ESP32 音频
+  - 接收并转发 `ASR / Chat / TTS` 结果
+  - 做日志、重连、错误处理、后续 prompt/RAG 扩展
+- 阶段计划：
+  - Phase 1：本地后端直连 Doubao，先用 PCM 文件跑通
+  - Phase 2：ESP32 实时上传音频，只验证识别
+  - Phase 3：后端回传 TTS，ESP32 实时播放
+  - Phase 4：打断播报、短回复策略、健康问答增强
+- 关联文档：
+  - `docs/VOICE_ASSISTANT_EDGE_CLOUD_PLAN.md`
+
+## 33. 2026-03-13 本地语音后端骨架已建立（Backend Scaffold Ready）
+- 新增目录：
+  - `backend/`
+- 已新增文件：
+  - `backend/requirements.txt`
+  - `backend/.env.example`
+  - `backend/README.md`
+  - `backend/config.py`
+  - `backend/models.py`
+  - `backend/doubao_client.py`
+  - `backend/main.py`
+- 当前状态：
+  - 本地 FastAPI + WebSocket 服务骨架已建立；
+  - 设备侧消息模型已定义（`hello/start_session/audio_chunk/stop_session/interrupt/device_status`）；
+  - Doubao Realtime Bridge 已建立配置层与默认 `StartSession` 参数生成逻辑；
+  - 真实 Doubao 二进制协议打包和会话转发尚未接入，等待用户提供真实 `AppID / AccessKey`。
+- 当前验证：
+  - 已执行 `python -m compileall backend`
+  - 结果：语法编译通过
+- 下一步：
+  - 在 `backend/.env` 中填入火山官方参数
+  - 按官方 Realtime API 完成 `StartConnection / StartSession / TaskRequest` 上游桥接
+
+## 34. 2026-03-13 Doubao Realtime 文本烟雾测试成功（Text Smoke Test Passed）
+- 测试方式：
+  - 使用 `backend/test_text_query.py`
+  - 通过本地后端桥接逻辑直接连接 Doubao Realtime API
+  - 采用 `input_mod=text` 模式进行最小链路验证
+- 实测结果：
+  - WebSocket 连接成功
+  - `StartSession` 成功
+  - `ChatTextQuery` 成功返回文本回复
+  - TTS 音频成功返回，并保存为：
+    - `backend/test_reply_audio.pcm`
+- 关键修正：
+  - 用户给出的 `.../dialogue1` 地址返回 `HTTP 404`
+  - 实测可用地址为：
+    - `wss://openspeech.bytedance.com/api/v3/realtime/dialogue`
+  - `bot_name` 长度受限，已从 `ESP32 Health Assistant` 缩短为 `HealthBot`
+  - 兼容 Python 3.10，移除 `asyncio.timeout` 依赖
+- 当前结论：
+  - 火山参数可用
+  - 官方 Realtime API 链路已被最小验证打通
+  - 下一步进入“ESP32 音频上行接入”阶段
+
+## 35. 2026-03-13 新增 ESP32 语音后端文字触发测试环境（Voice Backend Text Test）
+- 目的：
+  - 在不上麦克风实时流的前提下，先验证：
+    - `ESP32 -> 本地后端 -> Doubao -> 本地后端 -> ESP32扬声器`
+  - 该环境用于端到端语音回放联调，不影响主程序。
+- 新增固件环境：
+  - `voice-backend-text-test`
+- 新增文件：
+  - `firmware/src/voice_backend_text_test.cpp`
+  - `firmware/include/voice_backend_test_config.h`
+- 测试方式：
+  - ESP32 连接 Wi-Fi
+  - 连接本地后端 `ws://<host>:8787/ws/device`
+  - 启动时发送固定文本 query
+  - 后端调用 Doubao 文本模式生成回复与 TTS
+  - ESP32 接收 `tts_chunk` 并通过 MAX98357A 播放
+- 新增依赖：
+  - `ArduinoWebsockets`
+  - `ArduinoJson`
+- 当前验证：
+  - 已执行 `python -m platformio run -e voice-backend-text-test`
+  - 结果：编译通过
+
+## 36. 2026-03-13 新增 ESP32 实时语音后端测试环境（Voice Backend Live Test）
+- 目的：
+  - 在现有 ESP32-S3 + INMP441 + MAX98357A 硬件配置上，完成最小实时语音闭环验证：
+    - `ESP32 采音 -> 本地后端 -> Doubao Realtime -> 本地后端 -> ESP32 播放`
+- 新增固件环境：
+  - `voice-backend-live-test`
+- 新增文件：
+  - `firmware/src/voice_backend_live_test.cpp`
+- 后端同步增强：
+  - `backend/main.py` 增加 live audio session 路径
+  - `backend/doubao_client.py` 增加 `start_audio_session()` 与音频上行支持
+- 实现内容：
+  - 本地 VAD 校准与语音起止检测
+  - 20ms PCM 音频分包上行
+  - 接收并打印 `asr_partial / asr_final / reply_text / tts_chunk / tts_end`
+  - 通过 MAX98357A 播放返回语音
+- 当前验证：
+  - 已执行 `python -m platformio run -e voice-backend-live-test`
+  - 结果：编译通过
+  - 用户实测结果：已经可以完成实时语音识别与语音回复
+
+## 37. 2026-03-13 实时语音链路稳定性修正（TTS Chunk / Interrupt / Persona）
+- 问题定位：
+  - 实时语音链路早期版本可返回文本，但 `tts_chunk` 存在 `Failed to decode` 与 `JSON parse error: NoMemory`
+  - 根因是实时 TTS 返回块过大，ESP32 端 JSON/解码缓存不足
+- 已修正：
+  - 后端 `tts_chunk` 改为小块分包发送（与文本测试环境一致）
+  - ESP32 端增大 WebSocket JSON 文档缓存
+  - ESP32 端调整 TTS 解码缓存，减少解包失败
+- 交互策略增强：
+  - 新增播报中“插话打断”检测
+  - 播报完成后立即回到监听态，便于连续追问
+- 角色设定增强：
+  - 语音助手默认名称改为 `安小宁`
+  - 后端系统提示词已约束：
+    - 不默认自称豆包
+    - 以健康助手身份回答
+    - 对“你是谁”给出更完整的产品化回答
