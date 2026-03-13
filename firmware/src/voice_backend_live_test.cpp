@@ -35,8 +35,8 @@ constexpr float kVoiceOffFactor = 1.8f;
 constexpr float kVoiceOnMinRms = 0.012f;
 constexpr float kVoiceOffMinRms = 0.0065f;
 constexpr float kInterruptOnFactor = 3.4f;
-constexpr float kInterruptMinRms = 0.020f;
-constexpr uint8_t kInterruptTriggerFrames = 3;
+constexpr float kInterruptMinRms = 0.015f;
+constexpr uint8_t kInterruptTriggerFrames = 2;
 constexpr uint32_t kVoiceOffHoldMs = 450;
 constexpr uint32_t kTailStreamMs = 350;
 
@@ -279,8 +279,19 @@ void onMessageCallback(WebsocketsMessage message) {
   if (strcmp(type, "session_started") == 0) {
     g_voiceSessionActive = true;
     g_waitingForReply = false;
+    g_interruptArmed = false;
+    g_interruptFrames = 0;
   } else if (strcmp(type, "asr_partial") == 0 || strcmp(type, "asr_final") == 0) {
     // Logged above.
+  } else if (strcmp(type, "backend_status") == 0) {
+    if (strcmp(detail, "interrupt_ack") == 0 || strcmp(detail, "session_stop_ack") == 0) {
+      g_ttsStreaming = false;
+      g_voiceSessionActive = false;
+      g_waitingForReply = false;
+      g_interruptArmed = false;
+      g_interruptFrames = 0;
+      Serial.println("Backend session cleared -> listening");
+    }
   } else if (strcmp(type, "tts_chunk") == 0) {
     if (g_interruptArmed) {
       return;
@@ -375,6 +386,13 @@ void updateVoiceUplink() {
       if (g_interruptFrames < 255) {
         ++g_interruptFrames;
       }
+      Serial.print("INT?");
+      Serial.print(" rms=");
+      Serial.print(rmsNorm, 4);
+      Serial.print(" th=");
+      Serial.print(interruptOnTh, 4);
+      Serial.print(" frames=");
+      Serial.println(g_interruptFrames);
     } else {
       g_interruptFrames = 0;
     }

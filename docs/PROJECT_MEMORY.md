@@ -672,3 +672,24 @@
     - 不默认自称豆包
     - 以健康助手身份回答
     - 对“你是谁”给出更完整的产品化回答
+
+## 38. 2026-03-14 实时语音中断闭环增强（Interrupt Loop Tightening）
+- 问题定位：
+  - 用户反馈“播报到一半插话打断”在体感上仍未真正生效
+  - 根因不是单点故障，而是设备侧与后端侧的中断状态未完全闭环：
+    - 设备发出 `interrupt` 后，本地状态没有完全复位
+    - 后端虽然返回 `interrupt_ack`，但上一轮 live session 仍可能残留拖尾
+- 已增强：
+  - `backend/main.py`
+    - 新增统一 live session 清理逻辑
+    - `interrupt` 时主动取消当前转发任务并关闭 Doubao live session
+    - `start_session` 前若存在旧 live session，会先强制清理
+  - `firmware/src/voice_backend_live_test.cpp`
+    - 收到 `interrupt_ack / session_stop_ack` 后明确切回监听态
+    - 打断阈值进一步下调，减少插话触发门槛
+    - 新增串口调试日志：
+      - `INT? rms=... th=... frames=...`
+      - `Backend session cleared -> listening`
+- 当前目的：
+  - 让连续追问和播报中插话更接近真实“来回切换”的使用体验
+  - 为后续继续调参与并入主程序做准备

@@ -42,6 +42,34 @@ def chunk_bytes(data: bytes, chunk_size: int) -> list[bytes]:
     return [data[i : i + chunk_size] for i in range(0, len(data), chunk_size)]
 
 
+async def close_live_session(
+    live_bridge: DoubaoRealtimeBridge | None,
+    forward_task: asyncio.Task[None] | None,
+) -> tuple[DoubaoRealtimeBridge | None, asyncio.Task[None] | None]:
+    if forward_task is not None:
+        forward_task.cancel()
+        try:
+            await forward_task
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            pass
+        forward_task = None
+
+    if live_bridge is not None:
+        try:
+            await live_bridge.finish_session()
+        except Exception:
+            pass
+        try:
+            await live_bridge.close()
+        except Exception:
+            pass
+        live_bridge = None
+
+    return live_bridge, forward_task
+
+
 async def forward_audio_session(
     websocket: WebSocket,
     session_id: str,
@@ -105,8 +133,14 @@ async def forward_audio_session(
             elif packet.event in {153, 599}:
                 raise RuntimeError(str(packet.payload_json))
     finally:
-        await live_bridge.finish_session()
-        await live_bridge.close()
+        try:
+            await live_bridge.finish_session()
+        except Exception:
+            pass
+        try:
+            await live_bridge.close()
+        except Exception:
+            pass
 
 
 @app.websocket("/ws/device")
@@ -139,6 +173,11 @@ async def device_socket(websocket: WebSocket) -> None:
                 continue
 
             if message.type == "start_session":
+                if live_bridge is not None or forward_task is not None:
+                    live_bridge, forward_task = await close_live_session(
+                        live_bridge, forward_task
+                    )
+
                 if not bridge.credentials_ready():
                     await send_backend_message(
                         websocket,
@@ -231,6 +270,9 @@ async def device_socket(websocket: WebSocket) -> None:
                 continue
 
             if message.type == "interrupt":
+                live_bridge, forward_task = await close_live_session(
+                    live_bridge, forward_task
+                )
                 await send_backend_message(
                     websocket,
                     BackendMessage(
@@ -242,10 +284,10 @@ async def device_socket(websocket: WebSocket) -> None:
                 continue
 
             if message.type == "stop_session":
-                if forward_task is not None:
-                    await asyncio.wait_for(forward_task, timeout=15.0)
-                    forward_task = None
-                    live_bridge = None
+                if forward_task is not None or live_bridge is not None:
+                    live_bridge, forward_task = await close_live_session(
+                        live_bridge, forward_task
+                    )
                 await send_backend_message(
                     websocket,
                     BackendMessage(
@@ -268,6 +310,5 @@ async def device_socket(websocket: WebSocket) -> None:
                 continue
 
     except WebSocketDisconnect:
-        if forward_task is not None:
-            forward_task.cancel()
+        await close_live_session(live_bridge, forward_task)
         return
