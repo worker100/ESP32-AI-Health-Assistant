@@ -15,7 +15,7 @@
 #include <math.h>
 #include <string.h>
 
-#include "voice_backend_test_config.h"
+#include "project_config.h"
 
 namespace {
 constexpr uint8_t kI2cSda = 8;
@@ -35,16 +35,10 @@ constexpr uint32_t kMlxRetryMs = 5000;
 constexpr uint32_t kBeatTimeoutMs = 12000;
 constexpr uint32_t kCalibrationDurationMs = 3000;
 constexpr uint32_t kFingerLostDebounceMs = 1800;
-constexpr uint32_t kHrDisplayHoldMs = 15000;
-constexpr uint32_t kSpo2DisplayHoldMs = 25000;
 constexpr float kHrDisplayAlpha = 0.35f;
 constexpr float kHrRealtimeMaxJump = 10.0f;
 constexpr float kSpo2DisplayAlpha = 0.32f;
 constexpr float kSpo2RealtimeMaxJump = 2.5f;
-constexpr float kMinAcceptedBpm = 45.0f;
-constexpr float kMaxAcceptedBpm = 125.0f;
-constexpr int32_t kMinAcceptedSpo2 = 82;
-constexpr int32_t kMaxAcceptedSpo2 = 100;
 constexpr size_t kAlgoWindowSize = 100;
 constexpr size_t kAlgoStepSamples = 25;
 constexpr float kHrEwmaAlpha = 0.30f;
@@ -128,17 +122,6 @@ constexpr int kMicWsPin = 16;
 constexpr int kMicDinPin = 17;
 constexpr size_t kMicVadSamples = 256;
 constexpr uint32_t kMicVadUpdateMs = 120;
-constexpr uint32_t kMicVadCalMs = 3000;
-constexpr float kMicVadNoiseAlpha = 0.08f;
-constexpr float kMicVadOnFactor = 2.8f;
-constexpr float kMicVadOffFactor = 1.8f;
-constexpr float kMicVadMinOn = 0.012f;
-constexpr float kMicVadMinOff = 0.0065f;
-constexpr uint32_t kMicVadOffHoldMs = 450;
-constexpr uint32_t kMicVadMinTriggerIntervalMs = 1200;
-constexpr uint8_t kMicVadConsecutiveOnFrames = 2;
-constexpr uint8_t kMicVadConsecutiveOffFrames = 2;
-constexpr uint32_t kVoiceListenWindowMs = 4500;
 constexpr uint32_t kSerialCmdPollMs = 120;
 constexpr uint32_t kHealthLogMs = 5000;
 constexpr uint8_t kMpuReadFailReinitThreshold = 6;
@@ -146,18 +129,10 @@ constexpr uint8_t kMicReadFailReinitThreshold = 10;
 constexpr uint8_t kMlxReadFailReinitThreshold = 6;
 constexpr uint32_t kMaxSampleStallMs = 4000;
 constexpr uint8_t kMaxSampleStallReinitThreshold = 2;
-constexpr uint32_t kBackendStatusPushMs = 1500;
-constexpr uint32_t kBackendRetryMs = 5000;
-constexpr uint32_t kBackendWifiConnectTimeoutMs = 15000;
 constexpr size_t kBackendMicFrameSamples = 320;  // 20ms at 16kHz
 constexpr size_t kBackendMicChunkBytes = kBackendMicFrameSamples * sizeof(int16_t);
 constexpr size_t kBackendMicBase64Cap = 1024;
 constexpr size_t kBackendTtsChunkBytes = 1024;
-constexpr float kBackendTtsGain = 1.8f;
-constexpr float kBackendInterruptOnFactor = 3.4f;
-constexpr float kBackendInterruptMinRms = 0.015f;
-constexpr uint8_t kBackendInterruptTriggerFrames = 2;
-constexpr uint32_t kBackendTailStreamMs = 350;
 
 enum class SensorState {
   WaitingFinger,
@@ -359,7 +334,7 @@ websockets::WebsocketsClient g_backendClient;
 bool g_backendWsReady = false;
 bool g_backendHelloSent = false;
 bool g_backendWifiStarted = false;
-bool g_backendBridgeEnabled = kVoiceBackendStatusBridgeDefaultEnabled;
+bool g_backendBridgeEnabled = kProjectBackendBridgeDefaultEnabled;
 bool g_backendVoiceSessionActive = false;
 bool g_backendWaitingForReply = false;
 bool g_backendTtsStreaming = false;
@@ -2636,10 +2611,10 @@ void onBackendMessage(websockets::WebsocketsMessage message) {
 
 bool connectBackendSocket() {
   String url = "ws://";
-  url += kVoiceTestBackendHost;
+  url += kProjectBackendHost;
   url += ":";
-  url += String(kVoiceTestBackendPort);
-  url += kVoiceTestBackendPath;
+  url += String(kProjectBackendPort);
+  url += kProjectBackendPath;
 
   Serial.print("Backend connect: ");
   Serial.println(url);
@@ -2672,11 +2647,11 @@ void updateBackendBridge(uint32_t now) {
 
   if (!g_backendWifiStarted) {
     WiFi.mode(WIFI_STA);
-    WiFi.begin(kVoiceTestWifiSsid, kVoiceTestWifiPassword);
+    WiFi.begin(kProjectWifiSsid, kProjectWifiPassword);
     g_backendWifiStarted = true;
     g_backendWifiStartMs = now;
     Serial.print("Backend WiFi connecting: ");
-    Serial.println(kVoiceTestWifiSsid);
+    Serial.println(kProjectWifiSsid);
     return;
   }
 
@@ -2687,7 +2662,7 @@ void updateBackendBridge(uint32_t now) {
       g_lastBackendRetryMs = now;
       g_backendWifiStartMs = now;
       WiFi.disconnect();
-      WiFi.begin(kVoiceTestWifiSsid, kVoiceTestWifiPassword);
+      WiFi.begin(kProjectWifiSsid, kProjectWifiPassword);
       Serial.print("Backend WiFi retry, status=");
       Serial.println(backendWifiStatusText(wifiStatus));
     }

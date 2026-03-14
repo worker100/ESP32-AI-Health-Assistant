@@ -829,8 +829,12 @@
   - 在 `invalid` 情况下，不对心率/血氧直接下结论
   - 在温度非 `body_screening` 时，不把该温度解释为可靠体温
 - 播报优化：
-  - 主程序后端 TTS 回放已加增益并做限幅
-  - 当前播放增益设置为 `1.8x`
+  - 主程序后端 TTS 回放已加数字增益/衰减并做限幅
+  - 当前正式配置改为三档预设：
+    - `Low = 0.35x`
+    - `Medium = 0.75x`
+    - `High = 1.10x`
+  - 之前 `Low=1.20x` 仍属于放大，已修正为真正的小声档
 
 ## 45. 2026-03-14 外部 MAX30102 开源例程评估结论
 - 已阅读外部参考项目：
@@ -851,3 +855,32 @@
 - 后续采纳策略：
   - 不直接移植该项目
   - 仅吸收其“较长稳定窗口 + 最近有效值保持”的思路，用于下一步 HR/SpO2 显示优化
+
+## 46. 2026-03-14 固件配置集中化与音量三档
+- 配置入口整理：
+  - 固件侧现在将“最常改、最适合用户直接调”的参数集中到：
+    - `firmware/include/project_config.h`
+  - 当前集中管理的内容包括：
+    - Wi-Fi SSID / Password
+    - 本地 backend host / port / path
+    - backend bridge 默认开关
+    - 喇叭音量三档预设
+    - 常用 voice/backend 阈值
+    - HR/SpO2 基础显示阈值
+- 音量预设：
+  - `SpeakerVolumePreset::Low`
+  - `SpeakerVolumePreset::Medium`
+  - `SpeakerVolumePreset::High`
+  - 当前默认：`Low`
+  - 播放增益通过 `kBackendTtsGain` 从预设自动换算
+- 测试配置职责收缩：
+  - `firmware/include/voice_backend_test_config.h` 现在只保留文本测试专用 query
+  - 主程序和实时语音测试不再依赖 `test` 头文件作为正式配置入口
+- 实际接入：
+  - `main.cpp`
+  - `voice_backend_live_test.cpp`
+  - `voice_backend_text_test.cpp`
+  都已经改为读取统一配置头中的网络与音量设置
+- 设计取舍：
+  - 这次只抽离“用户常改参数”，没有把所有硬件/算法常量都一次性搬出 `main.cpp`
+  - 目的是先提高可维护性，避免过度重构影响当前已跑通的链路

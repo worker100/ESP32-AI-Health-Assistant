@@ -62,12 +62,19 @@ Rule: finish one item -> mark `[x]` immediately -> append one line to completion
 - [x] H3. Louder TTS playback gain with PCM limiting
 - [ ] H4. Stable HR/SpO2 display hold window + timeout invalidation
 
+### I. Firmware configuration cleanup
+- [x] I1. Unified firmware config header for Wi-Fi / backend / speaker volume / voice thresholds
+- [x] I2. Three speaker volume presets (`Low / Medium / High`) exposed in config header
+- [x] I3. Formal main config entry moved to `firmware/include/project_config.h`
+- [ ] I4. Serial runtime volume command (`VOL LOW/MED/HIGH`)
+
 ## 3. Completion Log (newest first)
 - 2026-03-12: Completed full convergence pass for `D3/D4/E3/E4/C3/C4/B4/B5/F1/F2/F3/A5`.
 - 2026-03-14: Completed `G1` (device status uplink + backend prompt context injection for AI replies).
 - 2026-03-14: Completed `G2` (main firmware now sends filtered stable HR/SpO2/temperature/fall/quality context to the backend for AI session injection).
 - 2026-03-14: Completed `G4` (main firmware voice path now starts backend voice sessions, streams audio, receives TTS, and has passed on-device reply tests).
 - 2026-03-14: Completed `H1/H2/H3` (AI measurement confidence + temperature validity gating + louder backend TTS gain).
+- 2026-03-14: Completed `I1/I2/I3` (formal firmware config moved to `project_config.h`; Wi-Fi/backend/volume/thresholds centralized; low/medium/high presets now use practical gain values with `Low=0.35x`).
 - 2026-03-12: Completed `D2` (HR low-edge and spike suppression).
 - 2026-03-12: Completed `D1` (HR/O2 realtime + stable channels).
 - 2026-03-12: Completed `C2` (mute speaker outside alert states).

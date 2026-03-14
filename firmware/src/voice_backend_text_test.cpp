@@ -5,6 +5,7 @@
 #include <driver/i2s.h>
 #include <mbedtls/base64.h>
 
+#include "project_config.h"
 #include "voice_backend_test_config.h"
 
 using namespace websockets;
@@ -17,7 +18,6 @@ constexpr int kLrcPin = 5;
 constexpr int kDinPin = 6;
 constexpr int kBitsPerSample = 16;
 constexpr size_t kAudioChunkBytes = 2048;
-constexpr uint32_t kWifiConnectTimeoutMs = 20000;
 
 WebsocketsClient g_client;
 String g_sessionId;
@@ -96,6 +96,17 @@ void playPcmChunk(const String& payloadB64) {
     Serial.println("Failed to decode tts_chunk base64");
     return;
   }
+  int16_t* samples = reinterpret_cast<int16_t*>(raw);
+  const size_t sampleCount = decodedLen / sizeof(int16_t);
+  for (size_t i = 0; i < sampleCount; ++i) {
+    int32_t scaled = static_cast<int32_t>(samples[i] * kBackendTtsGain);
+    if (scaled > 32767) {
+      scaled = 32767;
+    } else if (scaled < -32768) {
+      scaled = -32768;
+    }
+    samples[i] = static_cast<int16_t>(scaled);
+  }
   size_t written = 0;
   i2s_write(kI2sPort, raw, decodedLen, &written, portMAX_DELAY);
 }
@@ -159,14 +170,14 @@ void onMessageCallback(WebsocketsMessage message) {
 
 bool connectWifi() {
   Serial.print("Connecting WiFi: ");
-  Serial.println(kVoiceTestWifiSsid);
+  Serial.println(kProjectWifiSsid);
   WiFi.mode(WIFI_STA);
-  WiFi.begin(kVoiceTestWifiSsid, kVoiceTestWifiPassword);
+  WiFi.begin(kProjectWifiSsid, kProjectWifiPassword);
 
   uint32_t startMs = millis();
   wl_status_t lastStatus = WL_IDLE_STATUS;
 
-  while (WiFi.status() != WL_CONNECTED && (millis() - startMs) < kWifiConnectTimeoutMs) {
+  while (WiFi.status() != WL_CONNECTED && (millis() - startMs) < kBackendWifiConnectTimeoutMs) {
     wl_status_t status = WiFi.status();
     if (status != lastStatus) {
       Serial.print("WiFi status=");
@@ -192,10 +203,10 @@ bool connectWifi() {
 
 bool connectBackend() {
   String url = "ws://";
-  url += kVoiceTestBackendHost;
+  url += kProjectBackendHost;
   url += ":";
-  url += String(kVoiceTestBackendPort);
-  url += kVoiceTestBackendPath;
+  url += String(kProjectBackendPort);
+  url += kProjectBackendPath;
 
   Serial.print("Connecting backend: ");
   Serial.println(url);
@@ -213,8 +224,8 @@ void setup() {
   Serial.println();
   Serial.println("VOICE BACKEND TEXT TEST");
 
-  if (strlen(kVoiceTestWifiSsid) == 0 || strlen(kVoiceTestWifiPassword) == 0) {
-    Serial.println("Please fill firmware/include/voice_backend_test_config.h first");
+  if (strlen(kProjectWifiSsid) == 0 || strlen(kProjectWifiPassword) == 0) {
+    Serial.println("Please fill firmware/include/project_config.h first");
     while (true) {
       delay(1000);
     }

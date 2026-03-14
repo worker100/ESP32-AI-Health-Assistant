@@ -6,7 +6,7 @@
 #include <math.h>
 #include <mbedtls/base64.h>
 
-#include "voice_backend_test_config.h"
+#include "project_config.h"
 
 using namespace websockets;
 
@@ -27,18 +27,7 @@ constexpr size_t kMicChunkBytes = kMicFrameSamples * sizeof(int16_t);
 constexpr size_t kMicBase64Cap = 1024;
 constexpr size_t kTtsChunkBytes = 1024;
 constexpr size_t kWsJsonDocBytes = 4096;
-constexpr uint32_t kWifiConnectTimeoutMs = 20000;
 constexpr uint32_t kVadCalibrationMs = 2500;
-constexpr float kNoiseEwmaAlpha = 0.08f;
-constexpr float kVoiceOnFactor = 2.8f;
-constexpr float kVoiceOffFactor = 1.8f;
-constexpr float kVoiceOnMinRms = 0.012f;
-constexpr float kVoiceOffMinRms = 0.0065f;
-constexpr float kInterruptOnFactor = 3.4f;
-constexpr float kInterruptMinRms = 0.015f;
-constexpr uint8_t kInterruptTriggerFrames = 2;
-constexpr uint32_t kVoiceOffHoldMs = 450;
-constexpr uint32_t kTailStreamMs = 350;
 
 WebsocketsClient g_client;
 String g_sessionId;
@@ -238,18 +227,29 @@ void playPcmChunk(const String& payloadB64) {
     Serial.println("Failed to decode tts_chunk");
     return;
   }
+  int16_t* samples = reinterpret_cast<int16_t*>(raw);
+  const size_t sampleCount = decodedLen / sizeof(int16_t);
+  for (size_t i = 0; i < sampleCount; ++i) {
+    int32_t scaled = static_cast<int32_t>(samples[i] * kBackendTtsGain);
+    if (scaled > 32767) {
+      scaled = 32767;
+    } else if (scaled < -32768) {
+      scaled = -32768;
+    }
+    samples[i] = static_cast<int16_t>(scaled);
+  }
   size_t written = 0;
   i2s_write(kSpkI2sPort, raw, decodedLen, &written, portMAX_DELAY);
 }
 
 bool connectWifi() {
   Serial.print("Connecting WiFi: ");
-  Serial.println(kVoiceTestWifiSsid);
+  Serial.println(kProjectWifiSsid);
   WiFi.mode(WIFI_STA);
-  WiFi.begin(kVoiceTestWifiSsid, kVoiceTestWifiPassword);
+  WiFi.begin(kProjectWifiSsid, kProjectWifiPassword);
 
   uint32_t startMs = millis();
-  while (WiFi.status() != WL_CONNECTED && (millis() - startMs) < kWifiConnectTimeoutMs) {
+  while (WiFi.status() != WL_CONNECTED && (millis() - startMs) < kBackendWifiConnectTimeoutMs) {
     delay(500);
     Serial.print(".");
   }
@@ -268,10 +268,10 @@ bool connectWifi() {
 
 bool connectBackend() {
   String url = "ws://";
-  url += kVoiceTestBackendHost;
+  url += kProjectBackendHost;
   url += ":";
-  url += String(kVoiceTestBackendPort);
-  url += kVoiceTestBackendPath;
+  url += String(kProjectBackendPort);
+  url += kProjectBackendPath;
 
   Serial.print("Connecting backend: ");
   Serial.println(url);
@@ -396,7 +396,7 @@ void updateVoiceUplink() {
   if (!g_noiseReady) {
     g_noiseFloor = (g_noiseFloor <= 0.0f)
                        ? rmsNorm
-                       : (1.0f - kNoiseEwmaAlpha) * g_noiseFloor + kNoiseEwmaAlpha * rmsNorm;
+                       : (1.0f - kMicVadNoiseAlpha) * g_noiseFloor + kMicVadNoiseAlpha * rmsNorm;
     if ((now - g_bootMs) >= kVadCalibrationMs) {
       g_noiseReady = true;
       Serial.println("VAD calibrated");
@@ -405,12 +405,12 @@ void updateVoiceUplink() {
   }
 
   if (!g_voiceActive && !g_voiceSessionActive) {
-    g_noiseFloor = (1.0f - kNoiseEwmaAlpha) * g_noiseFloor + kNoiseEwmaAlpha * rmsNorm;
+    g_noiseFloor = (1.0f - kMicVadNoiseAlpha) * g_noiseFloor + kMicVadNoiseAlpha * rmsNorm;
   }
 
-  float voiceOnTh = max(kVoiceOnMinRms, g_noiseFloor * kVoiceOnFactor);
-  float voiceOffTh = max(kVoiceOffMinRms, g_noiseFloor * kVoiceOffFactor);
-  float interruptOnTh = max(kInterruptMinRms, g_noiseFloor * kInterruptOnFactor);
+  float voiceOnTh = max(kMicVadMinOn, g_noiseFloor * kMicVadOnFactor);
+  float voiceOffTh = max(kMicVadMinOff, g_noiseFloor * kMicVadOffFactor);
+  float interruptOnTh = max(kBackendInterruptMinRms, g_noiseFloor * kBackendInterruptOnFactor);
   bool aboveOn = rmsNorm >= voiceOnTh;
   bool belowOff = rmsNorm < voiceOffTh;
 
@@ -430,7 +430,7 @@ void updateVoiceUplink() {
       g_interruptFrames = 0;
     }
 
-    if (!g_interruptArmed && g_interruptFrames >= kInterruptTriggerFrames) {
+    if (!g_interruptArmed && g_interruptFrames >= kBackendInterruptTriggerFrames) {
       g_interruptArmed = true;
       g_ttsStreaming = false;
       g_voiceSessionActive = false;
@@ -469,8 +469,8 @@ void updateVoiceUplink() {
     g_lastStreamMs = now;
   }
 
-  if (belowOff && (now - g_lastVoiceOnMs) > kVoiceOffHoldMs) {
-    if ((now - g_lastStreamMs) > kTailStreamMs) {
+  if (belowOff && (now - g_lastVoiceOnMs) > kMicVadOffHoldMs) {
+    if ((now - g_lastStreamMs) > kBackendTailStreamMs) {
       g_voiceActive = false;
       Serial.println("VOICE_OFF -> wait reply");
       stopVoiceSession();
@@ -486,8 +486,8 @@ void setup() {
   Serial.println();
   Serial.println("VOICE BACKEND LIVE TEST");
 
-  if (strlen(kVoiceTestWifiSsid) == 0 || strlen(kVoiceTestWifiPassword) == 0) {
-    Serial.println("Please fill firmware/include/voice_backend_test_config.h first");
+  if (strlen(kProjectWifiSsid) == 0 || strlen(kProjectWifiPassword) == 0) {
+    Serial.println("Please fill firmware/include/project_config.h first");
     while (true) {
       delay(1000);
     }
@@ -515,7 +515,7 @@ void loop() {
   if (g_wsReady) {
     g_client.poll();
   }
-  if (g_wsReady && (millis() - g_lastStatusPushMs) > 1500) {
+  if (g_wsReady && (millis() - g_lastStatusPushMs) > kBackendStatusPushMs) {
     sendDeviceStatus();
   }
   updateVoiceUplink();
