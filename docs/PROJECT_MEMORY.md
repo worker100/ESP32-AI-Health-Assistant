@@ -693,3 +693,161 @@
 - 当前目的：
   - 让连续追问和播报中插话更接近真实“来回切换”的使用体验
   - 为后续继续调参与并入主程序做准备
+
+## 39. 2026-03-14 主程序稳定健康上下文抽取（Main Firmware Stable AI Context）
+- 目的：
+  - 明确主程序中“哪些值适合发给 AI”，避免未来直接把整串串口调试日志原样喂给后端或模型
+- 已实现：
+  - 在 `firmware/src/main.cpp` 中新增 `AiHealthContextSnapshot`
+  - 当前抽取字段使用主程序中较稳定、可解释的显示/最终值：
+    - 心率：`heartRateDisplayBpm`
+    - 血氧：`spo2DisplayPercent`
+    - 温度：`objectC`
+    - 手指检测：`fingerDetected`
+    - 信号质量：`currentSignalQuality()`
+    - 跌倒状态：`g_fallState`
+    - 引导提示：`g_guidanceHint`
+    - 温度来源：`MAX / MLX / NONE`
+- 当前输出：
+  - 串口低频日志新增 `CTX ...` 行，作为后续接入后端的稳定上下文基线
+- 价值：
+  - 后续并入语音主程序时，不必解析人类可读的长串调试日志
+  - AI 上下文将优先使用过滤后的稳定值，而不是瞬时抖动值或中间调试值
+
+## 40. 2026-03-14 主程序健康上下文已接入后端桥接（Main Firmware Health Context Bridge Online）
+- 已实现：
+  - `firmware/src/main.cpp` 增加后台桥接状态机：
+    - 自动连接本地 Wi-Fi
+    - 自动连接本地后端 WebSocket
+    - 周期性发送 `device_status`
+  - 主程序发送给后端的是结构化稳定字段，而不是整条串口调试日志：
+    - `heart_rate_bpm`
+    - `spo2_percent`
+    - `temperature_c`
+    - `fall_state`
+    - `signal_quality`
+    - `finger_detected`
+    - `source`
+  - `backend/main.py` 会缓存最新 `device_status`
+  - `backend/doubao_client.py` 会把这些实时设备字段拼进 Doubao 会话的系统上下文
+- 当前效果：
+  - 语音测试链路在发起一轮新会话时，AI 已经可以看到主程序最近一次上报的稳定健康数据
+  - 这意味着后续用户问“我现在体温正常吗”“血氧低不低”“刚刚是不是跌倒了”时，模型已经具备使用设备实时上下文回答的基础
+- 当前边界：
+  - 这一步打通的是“主程序健康数据 -> 后端 -> AI上下文”
+  - 还没有把 `voice-backend-live-test` 的完整实时语音会话状态机整体并入 `main.cpp`
+  - 因此 `G4` 仍未完成，当前主程序更像“健康数据主线 + 语音桥接上报”，而不是“主程序内完整实时语音助手终版”
+- 角色设定：
+  - 当前默认助手身份为 `安小宁`
+  - 设计目标是作为 ESP32 健康监护设备上的中文语音健康助手，而非通用闲聊模型
+
+## 41. 2026-03-14 后端设备上下文作用域修正（Shared Device Context Resolution）
+- 问题：
+  - 早期实现中，`device_context` 仅存在于单个 WebSocket 连接内部
+  - 当“主程序上传健康数据”和“语音测试程序发起会话”不在同一连接时，AI 可能读不到主程序的实时健康上下文
+- 已修正：
+  - `backend/main.py` 现在会按 `device_id` 缓存最近一次 `device_status`
+  - 新会话启动时，优先使用主健康设备 `esp32-ai-health-assistant-main` 的最新上下文
+  - 若主健康设备不可用，再回退到请求连接自己的上下文或最近一次上下文
+- 字段语义优化：
+  - 原先混用的 `source` 已拆分为：
+    - `device_source`
+    - `temperature_source`
+  - 主程序上报：
+    - `device_source=main_firmware`
+    - `temperature_source=MAX/MLX/NONE`
+  - 语音测试环境上报：
+    - `device_source=voice_backend_live_test`
+    - `temperature_source=SIM`
+- 运行控制优化：
+  - 主程序后台桥接新增运行时开关：
+    - `BACKEND ON`
+    - `BACKEND OFF`
+    - `BACKEND?`
+  - 这样在纯本地监护调试时，可以关闭后端桥接，减少无意义的 Wi-Fi / WebSocket 重试
+
+## 42. 2026-03-14 主程序最小实时语音链路并入（G4 In Progress）
+- 已实现：
+  - `firmware/src/main.cpp` 已并入最小可用的后端语音链路：
+    - `start_session`
+    - `audio_chunk`
+    - `stop_session`
+    - `interrupt`
+    - `tts_chunk` 播放
+    - `tts_end` 收尾
+  - 主程序后台状态 `backendVoiceStateText()` 现在会区分：
+    - `calibrating`
+    - `listening`
+    - `thinking`
+    - `speaking`
+  - 主程序新增语音会话调试输出，例如：
+    - `Main VOICE_ON -> backend start session`
+    - `Main VOICE_OFF -> backend stop session`
+    - `Main TTS interrupted -> ready`
+    - `Backend voice round complete`
+- 设计原则：
+  - 尽量复用主程序已有的 `VOICE_WAKE / VOICE_LISTEN_START / VOICE_LISTEN_END`
+  - 不重写生命体征主流程
+  - 仅把已在 `voice-backend-live-test` 验证过的最小语音收发链路嫁接进主程序
+- 当前状态：
+  - 编译已通过
+  - 还需要设备实测验证：
+    - 主程序是否能稳定发起会话
+    - 实时语音是否能正常回传
+    - 播报时插话中断是否仍然有效
+    - 与生命体征采样并行时是否有额外干扰
+
+## 43. 2026-03-14 主程序端到端语音问答已跑通（G4 Closed）
+- 设备实测结果：
+  - 主程序已经可以在 `VOICE_WAKE / VOICE_LISTEN_START` 后发起后端 live session
+  - 后端可以返回：
+    - `session_started`
+    - `asr_partial / asr_final`
+    - `reply_text`
+    - `tts_chunk / tts_end`
+  - 主程序喇叭已经可以播报 AI 回复
+  - AI 回复已能引用主程序上传的实时健康上下文，例如心率、血氧、体温、信号质量
+- 重要运行时修复：
+  - 早期主程序无回复的根因，是新并入的后端语音链路在空闲阶段也持续读取麦克风，抢走了原有 VAD 的输入
+  - 已修正为仅在以下阶段读取麦克风帧：
+    - `VOICE_LISTEN`
+    - 后端 live session 已开始
+    - TTS 播放期间用于插话打断检测
+- 当前结论：
+  - `G4` 可以视为完成
+  - 后续重点不再是“能不能说”，而是“结果够不够稳、够不够谨慎”
+
+## 44. 2026-03-14 AI 可信度门控与播报增益
+- 已新增设备侧结构化可信度字段：
+  - `measurement_confidence = high / low / invalid`
+  - `temperature_validity = body_screening / needs_recheck / surface_or_environment / device_die_only / unavailable`
+- 主程序策略：
+  - 当 `measurement_confidence=invalid` 时，不把当前 HR/SpO2 作为可靠值发给 AI
+  - 当 `temperature_validity != body_screening` 时，不把当前温度作为可靠体温发给 AI
+- 后端提示词策略：
+  - `安小宁` 在 `low` 情况下优先提醒信号弱、建议复测
+  - 在 `invalid` 情况下，不对心率/血氧直接下结论
+  - 在温度非 `body_screening` 时，不把该温度解释为可靠体温
+- 播报优化：
+  - 主程序后端 TTS 回放已加增益并做限幅
+  - 当前播放增益设置为 `1.8x`
+
+## 45. 2026-03-14 外部 MAX30102 开源例程评估结论
+- 已阅读外部参考项目：
+  - `D:\BaiduNetdiskDownload\max30102直接运行\max30102直接运行`
+  - 关键文件：
+    - `Hardware\max30102\max30102.c`
+    - `Hardware\max30102\max30102.h`
+    - `User\main.c`
+- 结论：
+  - 该项目更像“MAX30102 最小可运行例程”，而非完成了可靠性优化的健康监测方案
+  - 优点：
+    - 使用 `FS=100`、`500` 点窗口、`100` 点滚动更新，说明稳定显示依赖较长窗口
+    - 采用经典 `maxim_heart_rate_and_oxygen_saturation(...)` 参考算法
+  - 局限：
+    - 没有像当前项目这样做 `NO_FINGER / LOW_PI / POOR / FAIR / GOOD` 级别的质量门控
+    - 没有异常恢复、AI 安全提示或多传感器上下文
+    - 更容易“看起来有值”，但不代表更可靠
+- 后续采纳策略：
+  - 不直接移植该项目
+  - 仅吸收其“较长稳定窗口 + 最近有效值保持”的思路，用于下一步 HR/SpO2 显示优化

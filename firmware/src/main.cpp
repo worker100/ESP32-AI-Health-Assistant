@@ -1,4 +1,7 @@
 #include <Arduino.h>
+#include <WiFi.h>
+#include <ArduinoWebsockets.h>
+#include <ArduinoJson.h>
 #include <Wire.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
@@ -7,9 +10,12 @@
 #include "heartRate.h"
 #include "spo2_algorithm.h"
 #include <driver/i2s.h>
+#include <mbedtls/base64.h>
 #include <algorithm>
 #include <math.h>
 #include <string.h>
+
+#include "voice_backend_test_config.h"
 
 namespace {
 constexpr uint8_t kI2cSda = 8;
@@ -140,6 +146,18 @@ constexpr uint8_t kMicReadFailReinitThreshold = 10;
 constexpr uint8_t kMlxReadFailReinitThreshold = 6;
 constexpr uint32_t kMaxSampleStallMs = 4000;
 constexpr uint8_t kMaxSampleStallReinitThreshold = 2;
+constexpr uint32_t kBackendStatusPushMs = 1500;
+constexpr uint32_t kBackendRetryMs = 5000;
+constexpr uint32_t kBackendWifiConnectTimeoutMs = 15000;
+constexpr size_t kBackendMicFrameSamples = 320;  // 20ms at 16kHz
+constexpr size_t kBackendMicChunkBytes = kBackendMicFrameSamples * sizeof(int16_t);
+constexpr size_t kBackendMicBase64Cap = 1024;
+constexpr size_t kBackendTtsChunkBytes = 1024;
+constexpr float kBackendTtsGain = 1.8f;
+constexpr float kBackendInterruptOnFactor = 3.4f;
+constexpr float kBackendInterruptMinRms = 0.015f;
+constexpr uint8_t kBackendInterruptTriggerFrames = 2;
+constexpr uint32_t kBackendTailStreamMs = 350;
 
 enum class SensorState {
   WaitingFinger,
@@ -237,6 +255,22 @@ struct TemperatureData {
   uint32_t lastUpdateMs = 0;
 };
 
+struct AiHealthContextSnapshot {
+  bool heartRateValid = false;
+  bool spo2Valid = false;
+  bool temperatureValid = false;
+  float heartRateBpm = 0.0f;
+  float spo2Percent = 0.0f;
+  float temperatureC = 0.0f;
+  bool fingerDetected = false;
+  SignalQuality signalQuality = SignalQuality::NoFinger;
+  FallState fallState = FallState::Normal;
+  GuidanceHint guidanceHint = GuidanceHint::None;
+  const char* measurementConfidence = "invalid";
+  const char* temperatureValidity = "unavailable";
+  const char* tempSource = "NONE";
+};
+
 struct MpuSample {
   float axG = 0.0f;
   float ayG = 0.0f;
@@ -321,6 +355,24 @@ uint32_t g_voiceListenUntilMs = 0;
 FallProfile g_fallProfile = FallProfile::Normal;
 uint32_t g_lastSerialCmdPollMs = 0;
 GuidanceHint g_guidanceHint = GuidanceHint::None;
+websockets::WebsocketsClient g_backendClient;
+bool g_backendWsReady = false;
+bool g_backendHelloSent = false;
+bool g_backendWifiStarted = false;
+bool g_backendBridgeEnabled = kVoiceBackendStatusBridgeDefaultEnabled;
+bool g_backendVoiceSessionActive = false;
+bool g_backendWaitingForReply = false;
+bool g_backendTtsStreaming = false;
+bool g_backendInterruptArmed = false;
+bool g_backendStopRequested = false;
+uint8_t g_backendInterruptFrames = 0;
+uint32_t g_backendVoiceSessionIdCounter = 0;
+uint32_t g_backendLastStreamMs = 0;
+uint32_t g_backendLastStatusPushMs = 0;
+uint32_t g_backendLastSpeakerRate = 0;
+String g_backendSessionId = "main-status";
+uint32_t g_backendWifiStartMs = 0;
+uint32_t g_lastBackendRetryMs = 0;
 bool g_pendingPromptTone = false;
 uint8_t g_mpuReadFailStreak = 0;
 uint8_t g_micReadFailStreak = 0;
@@ -623,6 +675,37 @@ const char* guidanceText(GuidanceHint hint) {
   return "UNK";
 }
 
+const char* measurementConfidenceText(bool fingerDetected, SignalQuality quality, GuidanceHint hint) {
+  if (!fingerDetected || quality == SignalQuality::NoFinger || quality == SignalQuality::Waiting ||
+      quality == SignalQuality::Calibrating) {
+    return "invalid";
+  }
+  if (quality == SignalQuality::Poor || hint != GuidanceHint::None) {
+    return "low";
+  }
+  return "high";
+}
+
+const char* temperatureValidityText(const TemperatureData& temp, bool fingerDetected,
+                                    SignalQuality quality, GuidanceHint hint) {
+  if (!temp.valid) {
+    return "unavailable";
+  }
+  if (temp.fromMax30102Die) {
+    return "device_die_only";
+  }
+  if (!fingerDetected) {
+    return "surface_or_environment";
+  }
+  if (temp.objectC < 34.5f || temp.objectC > 42.5f) {
+    return "needs_recheck";
+  }
+  if (quality == SignalQuality::Poor || hint != GuidanceHint::None) {
+    return "needs_recheck";
+  }
+  return "body_screening";
+}
+
 float activeFreeFallThresholdG() {
   return (g_fallProfile == FallProfile::Test) ? kFreeFallThresholdGTest : kFreeFallThresholdGNormal;
 }
@@ -744,6 +827,12 @@ void printFallThresholds() {
   Serial.println(" ms");
 }
 
+const char* backendWifiStatusText(wl_status_t status);
+void stopBackendBridge();
+void sendBackendDeviceStatus(const AiHealthContextSnapshot& ctx);
+AiHealthContextSnapshot buildAiHealthContextSnapshot();
+void ensureSpeakerSampleRate(uint32_t sampleRate);
+
 void setFallProfile(FallProfile profile, bool announce = true) {
   if (g_fallProfile == profile) {
     return;
@@ -776,7 +865,7 @@ void pollSerialCommands(uint32_t now) {
     Serial.print("Fall profile=");
     Serial.println(fallProfileText(g_fallProfile));
   } else if (cmd == "HELP") {
-    Serial.println("Commands: MODE TEST | MODE NORMAL | MODE? | FALL? | HEALTH?");
+    Serial.println("Commands: MODE TEST | MODE NORMAL | MODE? | FALL? | HEALTH? | BACKEND? | BACKEND ON | BACKEND OFF");
   } else if (cmd == "HEALTH?") {
     Serial.print("Health i2cErr=");
     Serial.print(g_i2cErrorCount);
@@ -792,6 +881,32 @@ void pollSerialCommands(uint32_t now) {
     Serial.print(g_maxLoopDurationUs);
     Serial.print(" overrun=");
     Serial.println(g_loopOverrunCount);
+  } else if (cmd == "BACKEND?") {
+    Serial.print("Backend enabled=");
+    Serial.print(g_backendBridgeEnabled ? "ON" : "OFF");
+    Serial.print(" wifi=");
+    Serial.print(backendWifiStatusText(WiFi.status()));
+    Serial.print(" ws=");
+    Serial.print(g_backendWsReady ? "CONNECTED" : "DISCONNECTED");
+    Serial.print(" hello=");
+    Serial.print(g_backendHelloSent ? "SENT" : "WAIT");
+    Serial.print(" voice=");
+    Serial.print(g_backendVoiceSessionActive ? "STREAM" : (g_backendTtsStreaming ? "TTS" : (g_backendWaitingForReply ? "WAIT_REPLY" : "IDLE")));
+    Serial.print(" sid=");
+    Serial.println(g_backendSessionId);
+  } else if (cmd == "BACKEND ON") {
+    if (!g_backendBridgeEnabled) {
+      g_backendBridgeEnabled = true;
+      g_backendWifiStarted = false;
+      g_lastBackendRetryMs = 0;
+      g_backendLastStatusPushMs = 0;
+      Serial.println("Backend bridge enabled");
+    }
+  } else if (cmd == "BACKEND OFF") {
+    if (g_backendBridgeEnabled) {
+      stopBackendBridge();
+      Serial.println("Backend bridge disabled");
+    }
   }
 }
 
@@ -1138,6 +1253,7 @@ void initI2sAudio() {
     i2s_stop(kI2sPort);
     g_i2sReady = true;
     g_speakerActive = false;
+    g_backendLastSpeakerRate = 0;
     Serial.println("MAX98357 I2S init OK");
     Serial.println("Speaker muted by default (non-alert mode)");
   } else {
@@ -1171,6 +1287,7 @@ void ensureSpeakerActive() {
   i2s_zero_dma_buffer(kI2sPort);
   i2s_start(kI2sPort);
   g_speakerActive = true;
+  g_backendLastSpeakerRate = 0;
 }
 
 void ensureSpeakerMuted() {
@@ -1181,6 +1298,7 @@ void ensureSpeakerMuted() {
   i2s_stop(kI2sPort);
   forceSpeakerPinsLow();
   g_speakerActive = false;
+  g_backendLastSpeakerRate = 0;
 }
 
 void initMicI2s() {
@@ -1330,6 +1448,7 @@ void playTone(float frequencyHz, uint16_t durationMs, float amplitude = 0.35f) {
   if (!g_i2sReady || !g_speakerActive) {
     return;
   }
+  ensureSpeakerSampleRate(kI2sSampleRate);
 
   int16_t samples[kI2sAudioBufferSamples] = {0};
   const float omega = 2.0f * PI * frequencyHz / static_cast<float>(kI2sSampleRate);
@@ -1355,6 +1474,7 @@ void playSilence(uint16_t durationMs) {
     delay(durationMs);
     return;
   }
+  ensureSpeakerSampleRate(kI2sSampleRate);
 
   int16_t samples[kI2sAudioBufferSamples] = {0};
   const uint32_t totalSamples =
@@ -2162,6 +2282,534 @@ void updateSensor() {
   }
 }
 
+AiHealthContextSnapshot buildAiHealthContextSnapshot() {
+  AiHealthContextSnapshot ctx;
+  ctx.heartRateValid = g_vitals.heartRateDisplayValid;
+  ctx.spo2Valid = g_vitals.spo2DisplayValid;
+  ctx.temperatureValid = g_temperature.valid;
+  ctx.heartRateBpm = g_vitals.heartRateDisplayBpm;
+  ctx.spo2Percent = g_vitals.spo2DisplayPercent;
+  ctx.temperatureC = g_temperature.objectC;
+  ctx.fingerDetected = g_vitals.fingerDetected;
+  ctx.signalQuality = currentSignalQuality();
+  ctx.fallState = g_fallState;
+  ctx.guidanceHint = g_guidanceHint;
+  ctx.measurementConfidence =
+      measurementConfidenceText(ctx.fingerDetected, ctx.signalQuality, ctx.guidanceHint);
+  ctx.temperatureValidity =
+      temperatureValidityText(g_temperature, ctx.fingerDetected, ctx.signalQuality, ctx.guidanceHint);
+  if (strcmp(ctx.measurementConfidence, "invalid") == 0) {
+    ctx.heartRateValid = false;
+    ctx.spo2Valid = false;
+  }
+  if (strcmp(ctx.temperatureValidity, "body_screening") != 0) {
+    ctx.temperatureValid = false;
+  }
+  if (g_temperature.valid) {
+    ctx.tempSource = g_temperature.fromMax30102Die ? "MAX" : "MLX";
+  }
+  return ctx;
+}
+
+void logAiHealthContext(const AiHealthContextSnapshot& ctx) {
+  Serial.print("CTX hr=");
+  if (ctx.heartRateValid) {
+    Serial.print(ctx.heartRateBpm, 1);
+  } else {
+    Serial.print("null");
+  }
+  Serial.print(" spo2=");
+  if (ctx.spo2Valid) {
+    Serial.print(ctx.spo2Percent, 1);
+  } else {
+    Serial.print("null");
+  }
+  Serial.print(" temp=");
+  if (ctx.temperatureValid) {
+    Serial.print(ctx.temperatureC, 1);
+  } else {
+    Serial.print("null");
+  }
+  Serial.print(" finger=");
+  Serial.print(ctx.fingerDetected ? "true" : "false");
+  Serial.print(" quality=");
+  Serial.print(qualityText(ctx.signalQuality));
+  Serial.print(" fall=");
+  Serial.print(fallStateText(ctx.fallState));
+  Serial.print(" hint=");
+  Serial.print(guidanceText(ctx.guidanceHint));
+  Serial.print(" conf=");
+  Serial.print(ctx.measurementConfidence);
+  Serial.print(" tempv=");
+  Serial.print(ctx.temperatureValidity);
+  Serial.print(" src=");
+  Serial.println(ctx.tempSource);
+}
+
+const char* backendWifiStatusText(wl_status_t status) {
+  switch (status) {
+    case WL_NO_SHIELD:
+      return "NO_SHIELD";
+    case WL_IDLE_STATUS:
+      return "IDLE";
+    case WL_NO_SSID_AVAIL:
+      return "NO_SSID";
+    case WL_SCAN_COMPLETED:
+      return "SCAN_DONE";
+    case WL_CONNECTED:
+      return "CONNECTED";
+    case WL_CONNECT_FAILED:
+      return "CONNECT_FAILED";
+    case WL_CONNECTION_LOST:
+      return "CONNECTION_LOST";
+    case WL_DISCONNECTED:
+      return "DISCONNECTED";
+    default:
+      return "UNKNOWN";
+  }
+}
+
+const char* backendVoiceStateText() {
+  if (g_backendTtsStreaming) {
+    return "speaking";
+  }
+  if (g_backendWaitingForReply || g_backendVoiceSessionActive) {
+    return "thinking";
+  }
+  if (!g_voiceCalibrated) {
+    return "calibrating";
+  }
+  if (g_voiceState == VoiceState::Listen || g_voiceActive) {
+    return "listening";
+  }
+  if (g_systemMode == SystemMode::Alerting) {
+    return "alerting";
+  }
+  return "idle";
+}
+
+bool encodeBackendBase64(const uint8_t* input, size_t inputLen, char* output, size_t outputCap) {
+  size_t olen = 0;
+  const int rc = mbedtls_base64_encode(
+      reinterpret_cast<unsigned char*>(output),
+      outputCap,
+      &olen,
+      input,
+      inputLen);
+  if (rc != 0 || olen == 0 || olen >= outputCap) {
+    return false;
+  }
+  output[olen] = '\0';
+  return true;
+}
+
+bool decodeBackendBase64(const String& input, uint8_t* output, size_t outputCap, size_t& outputLen) {
+  size_t olen = 0;
+  const int rc = mbedtls_base64_decode(
+      output,
+      outputCap,
+      &olen,
+      reinterpret_cast<const unsigned char*>(input.c_str()),
+      input.length());
+  if (rc != 0) {
+    return false;
+  }
+  outputLen = olen;
+  return true;
+}
+
+void ensureSpeakerSampleRate(uint32_t sampleRate) {
+  if (!g_i2sReady || !g_speakerActive) {
+    return;
+  }
+  if (g_backendLastSpeakerRate == sampleRate) {
+    return;
+  }
+  i2s_set_clk(
+      kI2sPort,
+      sampleRate,
+      static_cast<i2s_bits_per_sample_t>(kI2sBitsPerSample),
+      I2S_CHANNEL_MONO);
+  g_backendLastSpeakerRate = sampleRate;
+}
+
+void sendBackendJson(const JsonDocument& doc) {
+  String payload;
+  serializeJson(doc, payload);
+  g_backendClient.send(payload);
+}
+
+void sendBackendHello() {
+  JsonDocument doc;
+  doc["type"] = "hello";
+  doc["device_id"] = "esp32-ai-health-assistant-main";
+  doc["session_id"] = "main-status";
+  sendBackendJson(doc);
+  g_backendHelloSent = true;
+}
+
+void startBackendVoiceSession() {
+  g_backendSessionId = "main-voice-" + String(++g_backendVoiceSessionIdCounter);
+  JsonDocument doc;
+  doc["type"] = "start_session";
+  doc["device_id"] = "esp32-ai-health-assistant-main";
+  doc["session_id"] = g_backendSessionId;
+  sendBackendJson(doc);
+}
+
+void stopBackendVoiceSession() {
+  JsonDocument doc;
+  doc["type"] = "stop_session";
+  doc["device_id"] = "esp32-ai-health-assistant-main";
+  doc["session_id"] = g_backendSessionId;
+  sendBackendJson(doc);
+}
+
+void interruptBackendVoiceSession() {
+  JsonDocument doc;
+  doc["type"] = "interrupt";
+  doc["device_id"] = "esp32-ai-health-assistant-main";
+  doc["session_id"] = g_backendSessionId;
+  sendBackendJson(doc);
+}
+
+bool readBackendMicFrame(int16_t* outPcm, size_t samples, float& rmsNorm) {
+  int32_t raw[kBackendMicFrameSamples] = {0};
+  size_t bytesRead = 0;
+  const esp_err_t err =
+      i2s_read(kMicI2sPort, raw, samples * sizeof(int32_t), &bytesRead, pdMS_TO_TICKS(40));
+  if (err != ESP_OK || bytesRead == 0) {
+    return false;
+  }
+
+  const size_t count = bytesRead / sizeof(int32_t);
+  if (count == 0) {
+    return false;
+  }
+
+  double sumSq = 0.0;
+  for (size_t i = 0; i < count; ++i) {
+    const int32_t s24 = raw[i] >> 8;
+    outPcm[i] = static_cast<int16_t>(s24 >> 8);
+    sumSq += static_cast<double>(s24) * static_cast<double>(s24);
+  }
+
+  rmsNorm = sqrt(sumSq / count) / 8388608.0f;
+  return true;
+}
+
+void sendBackendAudioChunk(const int16_t* pcm, size_t bytes) {
+  char b64[kBackendMicBase64Cap] = {0};
+  if (!encodeBackendBase64(reinterpret_cast<const uint8_t*>(pcm), bytes, b64, sizeof(b64))) {
+    Serial.println("Backend audio base64 encode failed");
+    return;
+  }
+
+  JsonDocument doc;
+  doc["type"] = "audio_chunk";
+  doc["device_id"] = "esp32-ai-health-assistant-main";
+  doc["session_id"] = g_backendSessionId;
+  doc["sample_rate"] = kMicSampleRate;
+  doc["payload_b64"] = b64;
+  sendBackendJson(doc);
+}
+
+void playBackendPcmChunk(const String& payloadB64) {
+  uint8_t raw[kBackendTtsChunkBytes] = {0};
+  size_t decodedLen = 0;
+  if (!decodeBackendBase64(payloadB64, raw, sizeof(raw), decodedLen)) {
+    Serial.println("Failed to decode backend tts_chunk");
+    return;
+  }
+  int16_t* samples = reinterpret_cast<int16_t*>(raw);
+  const size_t sampleCount = decodedLen / sizeof(int16_t);
+  for (size_t i = 0; i < sampleCount; ++i) {
+    int32_t scaled = static_cast<int32_t>(samples[i] * kBackendTtsGain);
+    if (scaled > 32767) {
+      scaled = 32767;
+    } else if (scaled < -32768) {
+      scaled = -32768;
+    }
+    samples[i] = static_cast<int16_t>(scaled);
+  }
+  ensureSpeakerActive();
+  ensureSpeakerSampleRate(24000);
+  size_t written = 0;
+  i2s_write(kI2sPort, raw, decodedLen, &written, portMAX_DELAY);
+}
+
+void sendBackendDeviceStatus(const AiHealthContextSnapshot& ctx) {
+  JsonDocument doc;
+  doc["type"] = "device_status";
+  doc["device_id"] = "esp32-ai-health-assistant-main";
+  doc["session_id"] = "main-status";
+  doc["state"] = backendVoiceStateText();
+  doc["fall_state"] = fallStateText(ctx.fallState);
+  doc["signal_quality"] = qualityText(ctx.signalQuality);
+  doc["finger_detected"] = ctx.fingerDetected;
+  doc["device_source"] = "main_firmware";
+  doc["temperature_source"] = ctx.tempSource;
+  doc["measurement_confidence"] = ctx.measurementConfidence;
+  doc["temperature_validity"] = ctx.temperatureValidity;
+  if (ctx.heartRateValid) {
+    doc["heart_rate_bpm"] = ctx.heartRateBpm;
+  }
+  if (ctx.spo2Valid) {
+    doc["spo2_percent"] = ctx.spo2Percent;
+  }
+  if (ctx.temperatureValid) {
+    doc["temperature_c"] = ctx.temperatureC;
+  }
+  sendBackendJson(doc);
+  g_backendLastStatusPushMs = millis();
+}
+
+void onBackendMessage(websockets::WebsocketsMessage message) {
+  JsonDocument doc;
+  DeserializationError err = deserializeJson(doc, message.data());
+  if (err) {
+    Serial.print("BJSON err=");
+    Serial.println(err.c_str());
+    return;
+  }
+
+  const char* type = doc["type"] | "";
+  const char* detail = doc["detail"] | "";
+  const char* text = doc["text"] | "";
+  Serial.print("BWS type=");
+  Serial.print(type);
+  if (strlen(detail) > 0) {
+    Serial.print(" detail=");
+    Serial.print(detail);
+  }
+  if (strlen(text) > 0) {
+    Serial.print(" text=");
+    Serial.print(text);
+  }
+  Serial.println();
+
+  if (strcmp(type, "session_started") == 0) {
+    g_backendVoiceSessionActive = true;
+    g_backendWaitingForReply = false;
+    g_backendInterruptArmed = false;
+    g_backendStopRequested = false;
+    g_backendInterruptFrames = 0;
+    sendBackendDeviceStatus(buildAiHealthContextSnapshot());
+    return;
+  }
+
+  if (strcmp(type, "backend_status") == 0) {
+    if (strcmp(detail, "interrupt_ack") == 0 || strcmp(detail, "session_stop_ack") == 0) {
+      g_backendTtsStreaming = false;
+      g_backendVoiceSessionActive = false;
+      g_backendWaitingForReply = false;
+      g_backendInterruptArmed = false;
+      g_backendStopRequested = false;
+      g_backendInterruptFrames = 0;
+      Serial.println("Backend session cleared -> monitoring");
+      sendBackendDeviceStatus(buildAiHealthContextSnapshot());
+    }
+    return;
+  }
+
+  if (strcmp(type, "tts_chunk") == 0) {
+    if (g_backendInterruptArmed) {
+      return;
+    }
+    g_backendTtsStreaming = true;
+    playBackendPcmChunk(String(static_cast<const char*>(doc["payload_b64"] | "")));
+    return;
+  }
+
+  if (strcmp(type, "tts_end") == 0) {
+    g_backendTtsStreaming = false;
+    g_backendVoiceSessionActive = false;
+    g_backendWaitingForReply = false;
+    g_backendInterruptArmed = false;
+    g_backendStopRequested = false;
+    g_backendInterruptFrames = 0;
+    Serial.println("Backend voice round complete");
+    sendBackendDeviceStatus(buildAiHealthContextSnapshot());
+    return;
+  }
+}
+
+bool connectBackendSocket() {
+  String url = "ws://";
+  url += kVoiceTestBackendHost;
+  url += ":";
+  url += String(kVoiceTestBackendPort);
+  url += kVoiceTestBackendPath;
+
+  Serial.print("Backend connect: ");
+  Serial.println(url);
+  g_backendWsReady = g_backendClient.connect(url);
+  if (g_backendWsReady) {
+    Serial.println("Backend WS connected (main)");
+    g_backendHelloSent = false;
+  } else {
+    Serial.println("Backend WS connect failed (main)");
+  }
+  return g_backendWsReady;
+}
+
+void stopBackendBridge() {
+  g_backendBridgeEnabled = false;
+  if (g_backendClient.available()) {
+    g_backendClient.close();
+  }
+  g_backendWsReady = false;
+  g_backendHelloSent = false;
+  g_backendWifiStarted = false;
+  g_backendWifiStartMs = 0;
+  g_lastBackendRetryMs = 0;
+}
+
+void updateBackendBridge(uint32_t now) {
+  if (!g_backendBridgeEnabled) {
+    return;
+  }
+
+  if (!g_backendWifiStarted) {
+    WiFi.mode(WIFI_STA);
+    WiFi.begin(kVoiceTestWifiSsid, kVoiceTestWifiPassword);
+    g_backendWifiStarted = true;
+    g_backendWifiStartMs = now;
+    Serial.print("Backend WiFi connecting: ");
+    Serial.println(kVoiceTestWifiSsid);
+    return;
+  }
+
+  const wl_status_t wifiStatus = WiFi.status();
+  if (wifiStatus != WL_CONNECTED) {
+    if ((now - g_backendWifiStartMs) > kBackendWifiConnectTimeoutMs &&
+        (now - g_lastBackendRetryMs) > kBackendRetryMs) {
+      g_lastBackendRetryMs = now;
+      g_backendWifiStartMs = now;
+      WiFi.disconnect();
+      WiFi.begin(kVoiceTestWifiSsid, kVoiceTestWifiPassword);
+      Serial.print("Backend WiFi retry, status=");
+      Serial.println(backendWifiStatusText(wifiStatus));
+    }
+    g_backendWsReady = false;
+    g_backendHelloSent = false;
+    return;
+  }
+
+  if (!g_backendWsReady) {
+    if ((now - g_lastBackendRetryMs) >= kBackendRetryMs) {
+      g_lastBackendRetryMs = now;
+      connectBackendSocket();
+    }
+    return;
+  }
+
+  g_backendClient.poll();
+  if (!g_backendClient.available()) {
+    g_backendWsReady = false;
+    g_backendHelloSent = false;
+    Serial.println("Backend WS disconnected (main)");
+    return;
+  }
+
+  if (!g_backendHelloSent) {
+    sendBackendHello();
+  }
+
+  if ((now - g_backendLastStatusPushMs) >= kBackendStatusPushMs) {
+    const AiHealthContextSnapshot ctx = buildAiHealthContextSnapshot();
+    sendBackendDeviceStatus(ctx);
+  }
+}
+
+void updateBackendVoiceAssistant(uint32_t now) {
+  if (!g_backendBridgeEnabled || !g_backendWsReady || !g_micReady) {
+    return;
+  }
+
+  if (g_systemMode == SystemMode::Alerting) {
+    if (g_backendTtsStreaming || g_backendVoiceSessionActive || g_backendWaitingForReply) {
+      g_backendInterruptArmed = true;
+      g_backendTtsStreaming = false;
+      g_backendVoiceSessionActive = false;
+      g_backendWaitingForReply = false;
+      g_backendStopRequested = false;
+      g_backendInterruptFrames = 0;
+      i2s_zero_dma_buffer(kI2sPort);
+      interruptBackendVoiceSession();
+      sendBackendDeviceStatus(buildAiHealthContextSnapshot());
+    }
+    return;
+  }
+
+  const bool needMicFrame =
+      g_backendTtsStreaming || g_backendVoiceSessionActive ||
+      (g_voiceState == VoiceState::Listen);
+  if (!needMicFrame) {
+    return;
+  }
+
+  int16_t pcm[kBackendMicFrameSamples] = {0};
+  float rmsNorm = 0.0f;
+  if (!readBackendMicFrame(pcm, kBackendMicFrameSamples, rmsNorm)) {
+    return;
+  }
+
+  const float interruptOnTh =
+      std::max(kBackendInterruptMinRms, g_voiceNoiseFloor * kBackendInterruptOnFactor);
+
+  if (g_backendTtsStreaming) {
+    if (rmsNorm >= interruptOnTh) {
+      if (g_backendInterruptFrames < 255) {
+        ++g_backendInterruptFrames;
+      }
+    } else {
+      g_backendInterruptFrames = 0;
+    }
+
+    if (!g_backendInterruptArmed && g_backendInterruptFrames >= kBackendInterruptTriggerFrames) {
+      g_backendInterruptArmed = true;
+      g_backendTtsStreaming = false;
+      g_backendVoiceSessionActive = false;
+      g_backendWaitingForReply = false;
+      g_backendStopRequested = false;
+      g_backendInterruptFrames = 0;
+      i2s_zero_dma_buffer(kI2sPort);
+      interruptBackendVoiceSession();
+      Serial.println("Main TTS interrupted -> ready");
+      sendBackendDeviceStatus(buildAiHealthContextSnapshot());
+    }
+    return;
+  }
+
+  if (g_voiceState == VoiceState::Listen && !g_backendVoiceSessionActive && !g_backendWaitingForReply) {
+    startBackendVoiceSession();
+    g_backendWaitingForReply = true;
+    g_backendStopRequested = false;
+    g_backendLastStreamMs = now;
+    Serial.println("Main VOICE_ON -> backend start session");
+    sendBackendDeviceStatus(buildAiHealthContextSnapshot());
+    return;
+  }
+
+  if (g_backendVoiceSessionActive) {
+    sendBackendAudioChunk(pcm, kBackendMicChunkBytes);
+    g_backendLastStreamMs = now;
+  }
+
+  if (!g_backendStopRequested &&
+      (g_backendVoiceSessionActive || g_backendWaitingForReply) &&
+      g_voiceState != VoiceState::Listen &&
+      (now - g_backendLastStreamMs) > kBackendTailStreamMs) {
+    stopBackendVoiceSession();
+    g_backendWaitingForReply = true;
+    g_backendVoiceSessionActive = false;
+    g_backendStopRequested = true;
+    Serial.println("Main VOICE_OFF -> backend stop session");
+    sendBackendDeviceStatus(buildAiHealthContextSnapshot());
+  }
+}
+
 void renderUi() {
   const uint32_t now = millis();
   if (now - g_lastUiRefreshMs < kUiRefreshMs) {
@@ -2312,6 +2960,9 @@ void renderUi() {
     Serial.print("NONE");
   }
   Serial.println();
+
+  const AiHealthContextSnapshot ctx = buildAiHealthContextSnapshot();
+  logAiHealthContext(ctx);
 }
 }  // namespace
 
@@ -2321,7 +2972,7 @@ void setup() {
   Serial.println("Booting ESP32 AI Health Assistant...");
   g_fallProfile = FallProfile::Normal;
   printFallThresholds();
-  Serial.println("Cmd: MODE TEST | MODE NORMAL | MODE? | HEALTH?");
+  Serial.println("Cmd: MODE TEST | MODE NORMAL | MODE? | HEALTH? | BACKEND? | BACKEND ON | BACKEND OFF");
 
   initI2c();
   i2cScan();
@@ -2330,6 +2981,7 @@ void setup() {
   initMpu6050();
   initI2sAudio();
   initMicI2s();
+  g_backendClient.onMessage(onBackendMessage);
   if (kEnableMlx90614) {
     initMlx90614(true);
   } else {
@@ -2359,6 +3011,8 @@ void loop() {
   updateVoiceVad(now);
   updateTemperature();
   updateSystemModeAndEvents(now);
+  updateBackendBridge(now);
+  updateBackendVoiceAssistant(now);
   renderUi();
   updateHealthSnapshot(now, loopStartUs);
 }

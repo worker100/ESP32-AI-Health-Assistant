@@ -14,6 +14,9 @@ from models import BackendMessage, DeviceMessage
 
 app = FastAPI(title="ESP32 AI Health Assistant Backend")
 bridge = DoubaoRealtimeBridge()
+latest_device_context_by_device_id: dict[str, dict[str, Any]] = {}
+latest_any_device_context: dict[str, Any] = {}
+PRIMARY_HEALTH_DEVICE_ID = "esp32-ai-health-assistant-main"
 
 
 @app.get("/health")
@@ -40,6 +43,20 @@ def parse_device_message(raw: str) -> DeviceMessage:
 
 def chunk_bytes(data: bytes, chunk_size: int) -> list[bytes]:
     return [data[i : i + chunk_size] for i in range(0, len(data), chunk_size)]
+
+
+def resolve_device_context(
+    *,
+    requester_device_id: str,
+    local_context: dict[str, Any],
+) -> dict[str, Any]:
+    if PRIMARY_HEALTH_DEVICE_ID in latest_device_context_by_device_id:
+        return latest_device_context_by_device_id[PRIMARY_HEALTH_DEVICE_ID]
+    if requester_device_id in latest_device_context_by_device_id:
+        return latest_device_context_by_device_id[requester_device_id]
+    if local_context:
+        return local_context
+    return latest_any_device_context.copy()
 
 
 async def close_live_session(
@@ -155,6 +172,7 @@ async def device_socket(websocket: WebSocket) -> None:
     )
     live_bridge: DoubaoRealtimeBridge | None = None
     forward_task: asyncio.Task[None] | None = None
+    device_context: dict[str, Any] = {}
 
     try:
         while True:
@@ -202,7 +220,12 @@ async def device_socket(websocket: WebSocket) -> None:
                     )
                     await bridge.connect()
                     try:
-                        await bridge.start_text_session()
+                        await bridge.start_text_session(
+                            resolve_device_context(
+                                requester_device_id=message.device_id,
+                                local_context=device_context,
+                            )
+                        )
                         result = await bridge.collect_text_round(query=message.text)
                         await send_backend_message(
                             websocket,
@@ -240,7 +263,12 @@ async def device_socket(websocket: WebSocket) -> None:
 
                 live_bridge = DoubaoRealtimeBridge()
                 await live_bridge.connect()
-                await live_bridge.start_audio_session()
+                await live_bridge.start_audio_session(
+                    resolve_device_context(
+                        requester_device_id=message.device_id,
+                        local_context=device_context,
+                    )
+                )
                 await send_backend_message(
                     websocket,
                     BackendMessage(
@@ -299,12 +327,35 @@ async def device_socket(websocket: WebSocket) -> None:
                 continue
 
             if message.type == "device_status":
+                device_context = {
+                    "state": message.state,
+                    "heart_rate_bpm": message.heart_rate_bpm,
+                    "spo2_percent": message.spo2_percent,
+                    "temperature_c": message.temperature_c,
+                    "fall_state": message.fall_state,
+                    "signal_quality": message.signal_quality,
+                    "finger_detected": message.finger_detected,
+                    "device_source": message.device_source,
+                    "temperature_source": message.temperature_source,
+                    "measurement_confidence": message.measurement_confidence,
+                    "temperature_validity": message.temperature_validity,
+                }
+                latest_device_context_by_device_id[message.device_id] = device_context.copy()
+                latest_any_device_context.clear()
+                latest_any_device_context.update(device_context)
                 await send_backend_message(
                     websocket,
                     BackendMessage(
                         type="backend_status",
                         session_id=message.session_id,
-                        detail=f"device_state={message.state or 'unknown'}",
+                        detail=(
+                            f"device_state={message.state or 'unknown'}"
+                            f"/hr={message.heart_rate_bpm if message.heart_rate_bpm is not None else '-'}"
+                            f"/spo2={message.spo2_percent if message.spo2_percent is not None else '-'}"
+                            f"/temp={message.temperature_c if message.temperature_c is not None else '-'}"
+                            f"/src={message.device_source or '-'}"
+                            f"/conf={message.measurement_confidence or '-'}"
+                        ),
                     ),
                 )
                 continue

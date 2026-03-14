@@ -1,6 +1,6 @@
 # ESP32 AI Health Assistant Optimization Tracker
 
-Updated: 2026-03-12  
+Updated: 2026-03-14  
 Rule: finish one item -> mark `[x]` immediately -> append one line to completion log.
 
 ## 1. Objectives
@@ -48,8 +48,26 @@ Rule: finish one item -> mark `[x]` immediately -> append one line to completion
 - [x] F2. Unified I2C error counting + retry path
 - [x] F3. Runtime health fields (loop cost, error counters, recent events)
 
+### G. Cloud AI integration
+- [x] G1. Device status uplink + AI prompt context injection
+- [x] G2. Live sensor values into backend context from main program
+  Notes: main firmware now extracts filtered stable health context, logs `CTX ...`, and periodically pushes structured `device_status` to the backend bridge. Backend context is cached by `device_id`, with the main health device preferred when a live voice session starts.
+- [ ] G3. OLED voice state presentation
+- [x] G4. Merge live voice test flow into main firmware
+  Notes: main firmware now supports end-to-end voice rounds (`start_session` / `audio_chunk` / `stop_session` / `interrupt` / `tts_chunk` playback) and has been validated on device with real AI replies that reference current health context.
+
+### H. Measurement reliability / assistant safety
+- [x] H1. Structured measurement confidence for AI (`high/low/invalid`)
+- [x] H2. Temperature validity gating (`body_screening / needs_recheck / surface_or_environment / ...`)
+- [x] H3. Louder TTS playback gain with PCM limiting
+- [ ] H4. Stable HR/SpO2 display hold window + timeout invalidation
+
 ## 3. Completion Log (newest first)
 - 2026-03-12: Completed full convergence pass for `D3/D4/E3/E4/C3/C4/B4/B5/F1/F2/F3/A5`.
+- 2026-03-14: Completed `G1` (device status uplink + backend prompt context injection for AI replies).
+- 2026-03-14: Completed `G2` (main firmware now sends filtered stable HR/SpO2/temperature/fall/quality context to the backend for AI session injection).
+- 2026-03-14: Completed `G4` (main firmware voice path now starts backend voice sessions, streams audio, receives TTS, and has passed on-device reply tests).
+- 2026-03-14: Completed `H1/H2/H3` (AI measurement confidence + temperature validity gating + louder backend TTS gain).
 - 2026-03-12: Completed `D2` (HR low-edge and spike suppression).
 - 2026-03-12: Completed `D1` (HR/O2 realtime + stable channels).
 - 2026-03-12: Completed `C2` (mute speaker outside alert states).

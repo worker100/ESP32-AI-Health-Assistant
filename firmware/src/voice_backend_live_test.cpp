@@ -55,6 +55,20 @@ uint32_t g_bootMs = 0;
 uint32_t g_lastVoiceOnMs = 0;
 uint32_t g_lastStreamMs = 0;
 uint8_t g_interruptFrames = 0;
+uint32_t g_lastStatusPushMs = 0;
+
+const char* currentVoiceState() {
+  if (g_ttsStreaming) {
+    return "speaking";
+  }
+  if (g_waitingForReply || g_voiceSessionActive) {
+    return "thinking";
+  }
+  if (g_voiceActive) {
+    return "listening";
+  }
+  return g_noiseReady ? "idle" : "calibrating";
+}
 
 const char* wifiStatusText(wl_status_t status) {
   switch (status) {
@@ -172,6 +186,21 @@ void sendInterrupt() {
   sendJson(doc);
 }
 
+void sendDeviceStatus() {
+  JsonDocument doc;
+  doc["type"] = "device_status";
+  doc["device_id"] = "esp32-s3-voice-live-test";
+  doc["session_id"] = g_sessionId;
+  doc["state"] = currentVoiceState();
+  doc["fall_state"] = "NORMAL";
+  doc["signal_quality"] = g_noiseReady ? "VOICE_TEST" : "CAL";
+  doc["finger_detected"] = false;
+  doc["device_source"] = "voice_backend_live_test";
+  doc["temperature_source"] = "SIM";
+  sendJson(doc);
+  g_lastStatusPushMs = millis();
+}
+
 bool encodeBase64(const uint8_t* input, size_t inputLen, char* output, size_t outputCap) {
   size_t olen = 0;
   int rc = mbedtls_base64_encode(
@@ -252,7 +281,7 @@ bool connectBackend() {
 }
 
 void onMessageCallback(WebsocketsMessage message) {
-  DynamicJsonDocument doc(kWsJsonDocBytes);
+  JsonDocument doc;
   DeserializationError err = deserializeJson(doc, message.data());
   if (err) {
     Serial.print("JSON parse error: ");
@@ -281,6 +310,7 @@ void onMessageCallback(WebsocketsMessage message) {
     g_waitingForReply = false;
     g_interruptArmed = false;
     g_interruptFrames = 0;
+    sendDeviceStatus();
   } else if (strcmp(type, "asr_partial") == 0 || strcmp(type, "asr_final") == 0) {
     // Logged above.
   } else if (strcmp(type, "backend_status") == 0) {
@@ -291,12 +321,14 @@ void onMessageCallback(WebsocketsMessage message) {
       g_interruptArmed = false;
       g_interruptFrames = 0;
       Serial.println("Backend session cleared -> listening");
+      sendDeviceStatus();
     }
   } else if (strcmp(type, "tts_chunk") == 0) {
     if (g_interruptArmed) {
       return;
     }
     g_ttsStreaming = true;
+    sendDeviceStatus();
     playPcmChunk(String(static_cast<const char*>(doc["payload_b64"] | "")));
   } else if (strcmp(type, "tts_end") == 0) {
     g_ttsStreaming = false;
@@ -305,6 +337,7 @@ void onMessageCallback(WebsocketsMessage message) {
     g_interruptArmed = false;
     g_interruptFrames = 0;
     Serial.println("Round complete");
+    sendDeviceStatus();
   }
 }
 
@@ -407,6 +440,7 @@ void updateVoiceUplink() {
       sendInterrupt();
       Serial.println("TTS interrupted -> ready for next question");
       g_interruptFrames = 0;
+      sendDeviceStatus();
     }
     return;
   }
@@ -418,6 +452,7 @@ void updateVoiceUplink() {
     Serial.println("VOICE_ON -> start session");
     startVoiceSession();
     g_waitingForReply = true;
+    sendDeviceStatus();
     return;
   }
 
@@ -439,6 +474,7 @@ void updateVoiceUplink() {
       g_voiceActive = false;
       Serial.println("VOICE_OFF -> wait reply");
       stopVoiceSession();
+      sendDeviceStatus();
     }
   }
 }
@@ -471,12 +507,16 @@ void setup() {
 
   g_sessionId = "boot-" + String(static_cast<uint32_t>(millis()));
   sendHello();
+  sendDeviceStatus();
   Serial.println("Speak after calibration...");
 }
 
 void loop() {
   if (g_wsReady) {
     g_client.poll();
+  }
+  if (g_wsReady && (millis() - g_lastStatusPushMs) > 1500) {
+    sendDeviceStatus();
   }
   updateVoiceUplink();
   delay(5);

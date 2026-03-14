@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import asyncio
 import uuid
@@ -38,7 +38,84 @@ class DoubaoRealtimeBridge:
     def credentials_ready(self) -> bool:
         return bool(self.app_id and self.access_key)
 
-    def start_session_payload(self) -> dict:
+    def _format_device_context(self, device_context: dict[str, Any] | None) -> str:
+        if not device_context:
+            return (
+                "Current device context: no live health metrics attached yet. "
+                "If the user asks about heart rate, blood oxygen, temperature, or fall alerts, "
+                "explain that current live values are unavailable unless the device provides them."
+            )
+
+        parts: list[str] = []
+
+        voice_state = device_context.get("state")
+        if voice_state:
+            parts.append(f"voice_state={voice_state}")
+
+        hr = device_context.get("heart_rate_bpm")
+        if hr is not None:
+            parts.append(f"heart_rate_bpm={hr:.1f}")
+
+        spo2 = device_context.get("spo2_percent")
+        if spo2 is not None:
+            parts.append(f"spo2_percent={spo2:.1f}")
+
+        temp = device_context.get("temperature_c")
+        if temp is not None:
+            parts.append(f"temperature_c={temp:.1f}")
+
+        fall_state = device_context.get("fall_state")
+        if fall_state:
+            parts.append(f"fall_state={fall_state}")
+
+        quality = device_context.get("signal_quality")
+        if quality:
+            parts.append(f"signal_quality={quality}")
+
+        finger_detected = device_context.get("finger_detected")
+        if finger_detected is not None:
+            parts.append(f"finger_detected={finger_detected}")
+
+        measurement_confidence = device_context.get("measurement_confidence")
+        if measurement_confidence:
+            parts.append(f"measurement_confidence={measurement_confidence}")
+
+        temperature_validity = device_context.get("temperature_validity")
+        if temperature_validity:
+            parts.append(f"temperature_validity={temperature_validity}")
+
+        device_source = device_context.get("device_source")
+        if device_source:
+            parts.append(f"device_source={device_source}")
+
+        temperature_source = device_context.get("temperature_source")
+        if temperature_source:
+            parts.append(f"temperature_source={temperature_source}")
+
+        if not parts:
+            return "Current device context: device is connected, but no specific health metrics are available yet."
+
+        return "Current device context: " + "; ".join(parts) + "."
+
+    def _build_system_role(self, device_context: dict[str, Any] | None) -> str:
+        return (
+            "You are An Xiaoning, a friendly Chinese-speaking health assistant running on an ESP32 health monitoring device. "
+            "Always answer in concise, natural Chinese suitable for voice playback. "
+            "Keep most answers within one to three short sentences. "
+            "When the user asks who you are, answer a bit more fully: explain that you are An Xiaoning, their health assistant, "
+            "and that you can help explain heart rate, blood oxygen, temperature, fall alerts, and daily health questions. "
+            "Do not call yourself Doubao or a generic language model unless the user explicitly asks about the underlying technology. "
+            "Do not invent sensor values that were not provided. "
+            "If current live values are not available, say so directly and ask the user to provide the displayed values if needed. "
+            "If measurement_confidence is low, say the signal quality is weak and suggest retesting before giving a strong conclusion. "
+            "If measurement_confidence is invalid, do not interpret heart rate or blood oxygen as a reliable current result. "
+            "If temperature_validity is not body_screening, do not treat the temperature as a trustworthy body temperature reading; explain that it may reflect environment, surface, or device heat and suggest retesting. "
+            "For high-risk situations such as chest pain, severe breathing difficulty, sustained high fever, or very low blood oxygen, "
+            "clearly advise seeking medical attention promptly. "
+            f"{self._format_device_context(device_context)}"
+        )
+
+    def start_session_payload(self, device_context: dict[str, Any] | None = None) -> dict:
         return {
             "asr": {
                 "audio_info": {
@@ -56,18 +133,8 @@ class DoubaoRealtimeBridge:
                 },
             },
             "dialog": {
-                "bot_name": "安小宁",
-                "system_role": (
-                    "你叫安小宁，是运行在ESP32健康监护设备上的语音健康助手。"
-                    "你的职责是用简短、自然、清楚的中文回答用户关于健康监测、"
-                    "日常健康习惯、设备状态和基础健康常识的问题。"
-                    "回答适合语音播报，优先控制在1到3句，避免冗长。"
-                    "当用户问你是谁时，请回答得稍微完整一些，例如说明你是安小宁，"
-                    "是用户的健康助手，可以帮助解释心率、血氧、体温、跌倒告警和日常健康问题；"
-                    "不要说自己是豆包、语言模型或某公司的产品，除非用户明确追问底层技术。"
-                    "遇到胸痛、呼吸困难、持续高热、极低血氧等高风险情况，要明确建议及时就医。"
-                    "不要编造设备没有提供的数据。"
-                ),
+                "bot_name": "AnXiaoning",
+                "system_role": self._build_system_role(device_context),
                 "extra": {
                     "model": self.default_session.model,
                 },
@@ -127,12 +194,12 @@ class DoubaoRealtimeBridge:
                 await self._ws.close()
                 self._ws = None
 
-    async def start_text_session(self) -> str:
+    async def start_text_session(self, device_context: dict[str, Any] | None = None) -> str:
         if self._ws is None:
             raise RuntimeError("Doubao websocket is not connected")
 
         self._session_id = str(uuid.uuid4())
-        payload = self.start_session_payload()
+        payload = self.start_session_payload(device_context)
         payload["dialog"]["extra"]["input_mod"] = "text"
         await self._ws.send(
             pack_json_event(
@@ -151,12 +218,12 @@ class DoubaoRealtimeBridge:
             )
         return self._session_id
 
-    async def start_audio_session(self) -> str:
+    async def start_audio_session(self, device_context: dict[str, Any] | None = None) -> str:
         if self._ws is None:
             raise RuntimeError("Doubao websocket is not connected")
 
         self._session_id = str(uuid.uuid4())
-        payload = self.start_session_payload()
+        payload = self.start_session_payload(device_context)
         await self._ws.send(
             pack_json_event(
                 EventId.SESSION_START,
