@@ -884,3 +884,36 @@
 - 设计取舍：
   - 这次只抽离“用户常改参数”，没有把所有硬件/算法常量都一次性搬出 `main.cpp`
   - 目的是先提高可维护性，避免过度重构影响当前已跑通的链路
+
+## 47. 2026-03-14 语音会话上下文新鲜度与异常自愈增强（Staleness + Recovery）
+- 问题背景：
+  - 设备端曾出现“串口/OLED有值，但 AI 回答像在看旧状态”的错位。
+  - 部分异常轮次会出现 `audio_chunk` 刷屏且无回复，表现为会话状态失配。
+- 固件侧改动（`firmware/src/main.cpp`）：
+  - 在发送 `start_session` 之前，先主动上报一帧最新 `device_status`，减少会话起点上下文偏旧。
+  - 新增对后端 `error` 事件的处理：收到后会清理本地语音会话状态，避免卡在 `thinking`。
+  - 对 `audio_chunk_ignored_no_live_session` 兼容处理：自动复位本地状态，减少“说话无响应”持续时间。
+  - 后端状态上报频率从 `1500ms` 调整到 `800ms`，提升上下文实时性。
+- 后端侧改动（`backend/main.py`）：
+  - 设备上下文缓存新增 `_updated_at_ms` 时间戳。
+  - `resolve_device_context()` 引入“新鲜度优先”策略：
+    - 主设备上下文过期时，允许使用更新鲜的请求设备上下文。
+  - `audio_chunk` 在无 live session 时改为限频告警（`audio_chunk_ignored_no_live_session`），不再逐包刷屏。
+  - live 会话转发异常会回传 `error`，便于设备端自动自愈。
+- 提示词策略增强（`backend/doubao_client.py`）：
+  - 增加规则：`finger_detected=true` 时不要说“没检测到手指”。
+  - 在 `measurement_confidence=low` 且有数值时，允许“谨慎引用近似屏显值 + 明确复测建议”。
+- 当前效果预期：
+  - 会话刚开始时，AI 回答与最新屏显的一致性提升。
+  - 异常会话更容易自动回到可用状态，减少用户体感“卡死”。
+
+## 48. 2026-03-14 P0 测量稳定性参数试探（MAX30102）
+- 目标：
+  - 在不改主算法结构的前提下，先做“低风险、可回滚”的稳定性参数试探。
+- 本次参数调整（`firmware/src/main.cpp::initMax30102`）：
+  - `sampleAverage: 4 -> 8`（增强平均，降低高频抖动）
+  - `adcRange: 4096 -> 8192`（提升量程，降低削顶风险）
+  - 串口新增配置打印：`MAX30102 initialized cfg avg=... sr=... pw=... adc=...`
+- 原则：
+  - 先做 P0 参数层优化，再决定是否进入 P1（质量门控结构调整）。
+  - 每次改动后通过固定流程复测：静息 3 分钟 + 轻微动作 + 摘手再贴手恢复。

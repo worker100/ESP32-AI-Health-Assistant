@@ -387,6 +387,48 @@ float pushAndMedian(float value, float* history, uint8_t* index, uint8_t* count)
   return medianFromHistory(history, *count);
 }
 
+bool shouldRefreshStableDisplay(uint32_t now, uint32_t lastRefreshMs, uint32_t stableWindowMs) {
+  if (lastRefreshMs == 0 || stableWindowMs == 0) {
+    return true;
+  }
+  return (now - lastRefreshMs) >= stableWindowMs;
+}
+
+void refreshHrDisplayValue(float candidateBpm, uint32_t now, float alpha) {
+  if (!g_vitals.heartRateDisplayValid) {
+    g_vitals.heartRateDisplayBpm = candidateBpm;
+    g_vitals.heartRateDisplayValid = true;
+    g_vitals.lastHrDisplayRefreshMs = now;
+    return;
+  }
+
+  if (!shouldRefreshStableDisplay(now, g_vitals.lastHrDisplayRefreshMs, kHrDisplayStableWindowMs)) {
+    return;
+  }
+
+  g_vitals.heartRateDisplayBpm =
+      (1.0f - alpha) * g_vitals.heartRateDisplayBpm + alpha * candidateBpm;
+  g_vitals.lastHrDisplayRefreshMs = now;
+}
+
+void refreshSpo2DisplayValue(float candidateSpo2, uint32_t now, float alpha) {
+  if (!g_vitals.spo2DisplayValid) {
+    g_vitals.spo2DisplayPercent = candidateSpo2;
+    g_vitals.spo2DisplayValid = true;
+    g_vitals.lastSpo2DisplayRefreshMs = now;
+    return;
+  }
+
+  if (!shouldRefreshStableDisplay(now, g_vitals.lastSpo2DisplayRefreshMs,
+                                  kSpo2DisplayStableWindowMs)) {
+    return;
+  }
+
+  g_vitals.spo2DisplayPercent =
+      (1.0f - alpha) * g_vitals.spo2DisplayPercent + alpha * candidateSpo2;
+  g_vitals.lastSpo2DisplayRefreshMs = now;
+}
+
 void resetMeasurementFilters() {
   g_bufferCount = 0;
   g_newSamplesSinceCalc = 0;
@@ -413,6 +455,8 @@ void resetMeasurementFilters() {
   g_vitals.heartRateRealtimeValid = false;
   g_vitals.spo2DisplayValid = false;
   g_vitals.spo2RealtimeValid = false;
+  g_vitals.lastHrUpdateMs = 0;
+  g_vitals.lastSpo2UpdateMs = 0;
   g_vitals.lastHrBeatAcceptedMs = 0;
   g_vitals.lastHrDisplayRefreshMs = 0;
   g_vitals.lastSpo2DisplayRefreshMs = 0;
@@ -1126,11 +1170,13 @@ void initMax30102() {
   }
 
   const byte ledBrightness = 60;
-  const byte sampleAverage = 4;
+  // P0 stability tuning: stronger FIFO averaging reduces high-frequency jitter.
+  const byte sampleAverage = 8;
   const byte ledMode = 2;
   const int sampleRate = 100;
   const int pulseWidth = 411;
-  const int adcRange = 4096;
+  // Use a wider ADC full-scale to avoid clipping when perfusion increases.
+  const int adcRange = 8192;
 
   max30102.setup(ledBrightness, sampleAverage, ledMode, sampleRate, pulseWidth, adcRange);
   g_ledAmplitude = 0x1F;
@@ -1140,7 +1186,14 @@ void initMax30102() {
   g_lastMaxSampleMs = millis();
   g_maxSampleStallCount = 0;
 
-  Serial.println("MAX30102 initialized");
+  Serial.print("MAX30102 initialized cfg avg=");
+  Serial.print(sampleAverage);
+  Serial.print(" sr=");
+  Serial.print(sampleRate);
+  Serial.print(" pw=");
+  Serial.print(pulseWidth);
+  Serial.print(" adc=");
+  Serial.println(adcRange);
 }
 
 bool initMpuAt(uint8_t addr) {
@@ -2001,15 +2054,7 @@ void updateSensor() {
           const bool beatStale = !g_vitals.heartRateRealtimeValid ||
                                  (now - g_vitals.lastHrBeatAcceptedMs) > kBeatRealtimeStaleMs;
           if (beatStale) {
-            if (!g_vitals.heartRateDisplayValid) {
-              g_vitals.heartRateDisplayBpm = algoBpm;
-            } else {
-              g_vitals.heartRateDisplayBpm =
-                  (1.0f - kHrAlgoFallbackAlpha) * g_vitals.heartRateDisplayBpm +
-                  kHrAlgoFallbackAlpha * algoBpm;
-            }
-            g_vitals.heartRateDisplayValid = true;
-            g_vitals.lastHrDisplayRefreshMs = now;
+            refreshHrDisplayValue(algoBpm, now, kHrAlgoFallbackAlpha);
     }
   }
 
@@ -2090,15 +2135,7 @@ void updateSensor() {
           g_vitals.spo2RealtimePercent = spo2Realtime;
           g_vitals.spo2RealtimeValid = true;
 
-          if (!g_vitals.spo2DisplayValid) {
-            g_vitals.spo2DisplayPercent = spo2Realtime;
-          } else {
-            g_vitals.spo2DisplayPercent =
-                (1.0f - kSpo2DisplayAlpha) * g_vitals.spo2DisplayPercent +
-                kSpo2DisplayAlpha * spo2Realtime;
-          }
-          g_vitals.spo2DisplayValid = true;
-          g_vitals.lastSpo2DisplayRefreshMs = now;
+          refreshSpo2DisplayValue(spo2Realtime, now, kSpo2DisplayAlpha);
         } else {
           g_spo2ValidStreak = 0;
           if (g_spo2InvalidStreak < 255) {
@@ -2106,11 +2143,6 @@ void updateSensor() {
             if (g_spo2InvalidStreak > 255) {
               g_spo2InvalidStreak = 255;
             }
-          }
-          if (g_vitals.spo2DisplayValid && qualityRatio < 0.30f) {
-            g_vitals.spo2DisplayPercent =
-                std::max(82.0f, g_vitals.spo2DisplayPercent - 0.12f);
-            g_vitals.lastSpo2DisplayRefreshMs = now;
           }
         }
       } else {
@@ -2120,11 +2152,6 @@ void updateSensor() {
           if (g_spo2InvalidStreak > 255) {
             g_spo2InvalidStreak = 255;
           }
-        }
-        if (g_vitals.spo2DisplayValid && qualityRatio < 0.30f) {
-          g_vitals.spo2DisplayPercent =
-              std::max(82.0f, g_vitals.spo2DisplayPercent - 0.14f);
-          g_vitals.lastSpo2DisplayRefreshMs = now;
         }
       }
 
@@ -2208,15 +2235,8 @@ void updateSensor() {
             g_vitals.heartRateRealtimeBpm = realtime;
             g_vitals.heartRateRealtimeValid = true;
 
-            if (!g_vitals.heartRateDisplayValid) {
-              g_vitals.heartRateDisplayBpm = realtime;
-            } else {
-            g_vitals.heartRateDisplayBpm = (1.0f - kHrDisplayAlpha) * g_vitals.heartRateDisplayBpm +
-                                             kHrDisplayAlpha * realtime;
-            }
-            g_vitals.heartRateDisplayValid = true;
+            refreshHrDisplayValue(realtime, now, kHrDisplayAlpha);
             g_vitals.lastHrBeatAcceptedMs = now;
-            g_vitals.lastHrDisplayRefreshMs = now;
           } else {
             g_hrValidStreak = 0;
             if (g_hrInvalidStreak < 255) {
@@ -2235,7 +2255,8 @@ void updateSensor() {
   }
 
   if (g_vitals.fingerDetected && g_vitals.heartRateDisplayValid &&
-      (millis() - g_vitals.lastHrDisplayRefreshMs) > kHrDisplayHoldMs) {
+      g_vitals.lastHrUpdateMs > 0 &&
+      (millis() - g_vitals.lastHrUpdateMs) > kHrDisplayHoldMs) {
     g_vitals.heartRateDisplayValid = false;
     g_vitals.heartRateRealtimeValid = false;
     g_vitals.heartRateDisplayBpm = 0.0f;
@@ -2249,7 +2270,8 @@ void updateSensor() {
   }
 
   if (g_vitals.fingerDetected && g_vitals.spo2DisplayValid &&
-      (millis() - g_vitals.lastSpo2DisplayRefreshMs) > kSpo2DisplayHoldMs) {
+      g_vitals.lastSpo2UpdateMs > 0 &&
+      (millis() - g_vitals.lastSpo2UpdateMs) > kSpo2DisplayHoldMs) {
     g_vitals.spo2DisplayValid = false;
     g_vitals.spo2RealtimeValid = false;
     g_vitals.spo2DisplayPercent = 0.0f;
@@ -2425,6 +2447,9 @@ void sendBackendHello() {
 
 void startBackendVoiceSession() {
   g_backendSessionId = "main-voice-" + String(++g_backendVoiceSessionIdCounter);
+  // Push latest health snapshot before creating a new AI session so backend context
+  // reflects the same moment the user sees on OLED/serial.
+  sendBackendDeviceStatus(buildAiHealthContextSnapshot());
   JsonDocument doc;
   doc["type"] = "start_session";
   doc["device_id"] = "esp32-ai-health-assistant-main";
@@ -2574,7 +2599,8 @@ void onBackendMessage(websockets::WebsocketsMessage message) {
   }
 
   if (strcmp(type, "backend_status") == 0) {
-    if (strcmp(detail, "interrupt_ack") == 0 || strcmp(detail, "session_stop_ack") == 0) {
+    if (strcmp(detail, "interrupt_ack") == 0 || strcmp(detail, "session_stop_ack") == 0 ||
+        strcmp(detail, "audio_chunk_ignored_no_live_session") == 0) {
       g_backendTtsStreaming = false;
       g_backendVoiceSessionActive = false;
       g_backendWaitingForReply = false;
@@ -2584,6 +2610,19 @@ void onBackendMessage(websockets::WebsocketsMessage message) {
       Serial.println("Backend session cleared -> monitoring");
       sendBackendDeviceStatus(buildAiHealthContextSnapshot());
     }
+    return;
+  }
+
+  if (strcmp(type, "error") == 0) {
+    g_backendTtsStreaming = false;
+    g_backendVoiceSessionActive = false;
+    g_backendWaitingForReply = false;
+    g_backendInterruptArmed = false;
+    g_backendStopRequested = false;
+    g_backendInterruptFrames = 0;
+    i2s_zero_dma_buffer(kI2sPort);
+    Serial.println("Backend error -> reset voice session state");
+    sendBackendDeviceStatus(buildAiHealthContextSnapshot());
     return;
   }
 

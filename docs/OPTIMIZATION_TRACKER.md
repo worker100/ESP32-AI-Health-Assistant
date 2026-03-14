@@ -60,7 +60,7 @@ Rule: finish one item -> mark `[x]` immediately -> append one line to completion
 - [x] H1. Structured measurement confidence for AI (`high/low/invalid`)
 - [x] H2. Temperature validity gating (`body_screening / needs_recheck / surface_or_environment / ...`)
 - [x] H3. Louder TTS playback gain with PCM limiting
-- [ ] H4. Stable HR/SpO2 display hold window + timeout invalidation
+- [x] H4. Stable HR/SpO2 display hold window + timeout invalidation
 
 ### I. Firmware configuration cleanup
 - [x] I1. Unified firmware config header for Wi-Fi / backend / speaker volume / voice thresholds
@@ -69,11 +69,13 @@ Rule: finish one item -> mark `[x]` immediately -> append one line to completion
 - [ ] I4. Serial runtime volume command (`VOL LOW/MED/HIGH`)
 
 ## 3. Completion Log (newest first)
+- 2026-03-14: Started P0 measurement stability tuning (MAX30102 `sampleAverage 4->8`, `adcRange 4096->8192`) to reduce jitter and clipping before algorithm-structure changes.
 - 2026-03-12: Completed full convergence pass for `D3/D4/E3/E4/C3/C4/B4/B5/F1/F2/F3/A5`.
 - 2026-03-14: Completed `G1` (device status uplink + backend prompt context injection for AI replies).
 - 2026-03-14: Completed `G2` (main firmware now sends filtered stable HR/SpO2/temperature/fall/quality context to the backend for AI session injection).
 - 2026-03-14: Completed `G4` (main firmware voice path now starts backend voice sessions, streams audio, receives TTS, and has passed on-device reply tests).
 - 2026-03-14: Completed `H1/H2/H3` (AI measurement confidence + temperature validity gating + louder backend TTS gain).
+- 2026-03-14: Completed `H4` (added HR/SpO2 stable display windows, hold-last-valid behavior, and timeout invalidation based on last valid measurement timestamp).
 - 2026-03-14: Completed `I1/I2/I3` (formal firmware config moved to `project_config.h`; Wi-Fi/backend/volume/thresholds centralized; low/medium/high presets now use practical gain values with `Low=0.35x`).
 - 2026-03-12: Completed `D2` (HR low-edge and spike suppression).
 - 2026-03-12: Completed `D1` (HR/O2 realtime + stable channels).

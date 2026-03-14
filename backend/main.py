@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import asyncio
 import json
+import time
 from typing import Any
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -17,6 +18,7 @@ bridge = DoubaoRealtimeBridge()
 latest_device_context_by_device_id: dict[str, dict[str, Any]] = {}
 latest_any_device_context: dict[str, Any] = {}
 PRIMARY_HEALTH_DEVICE_ID = "esp32-ai-health-assistant-main"
+CONTEXT_STALE_MS = 3000.0
 
 
 @app.get("/health")
@@ -50,10 +52,30 @@ def resolve_device_context(
     requester_device_id: str,
     local_context: dict[str, Any],
 ) -> dict[str, Any]:
-    if PRIMARY_HEALTH_DEVICE_ID in latest_device_context_by_device_id:
-        return latest_device_context_by_device_id[PRIMARY_HEALTH_DEVICE_ID]
-    if requester_device_id in latest_device_context_by_device_id:
-        return latest_device_context_by_device_id[requester_device_id]
+    now_ms = time.time() * 1000.0
+    primary_context = latest_device_context_by_device_id.get(PRIMARY_HEALTH_DEVICE_ID)
+    requester_context = latest_device_context_by_device_id.get(requester_device_id)
+
+    def age_ms(ctx: dict[str, Any] | None) -> float:
+        if not ctx:
+            return float("inf")
+        updated_at_ms = ctx.get("_updated_at_ms")
+        if not isinstance(updated_at_ms, (int, float)):
+            return float("inf")
+        return now_ms - float(updated_at_ms)
+
+    primary_age = age_ms(primary_context)
+    requester_age = age_ms(requester_context)
+
+    if primary_context is not None:
+        primary_is_fresh = primary_age <= CONTEXT_STALE_MS
+        requester_is_fresher = requester_context is not None and requester_age < primary_age
+        if primary_is_fresh or not requester_is_fresher:
+            return primary_context
+
+    if requester_context is not None:
+        return requester_context
+
     if local_context:
         return local_context
     return latest_any_device_context.copy()
@@ -149,6 +171,15 @@ async def forward_audio_session(
 
             elif packet.event in {153, 599}:
                 raise RuntimeError(str(packet.payload_json))
+    except Exception as exc:
+        await send_backend_message(
+            websocket,
+            BackendMessage(
+                type="error",
+                session_id=session_id,
+                detail=f"live_session_error: {exc}",
+            ),
+        )
     finally:
         try:
             await live_bridge.finish_session()
@@ -173,9 +204,24 @@ async def device_socket(websocket: WebSocket) -> None:
     live_bridge: DoubaoRealtimeBridge | None = None
     forward_task: asyncio.Task[None] | None = None
     device_context: dict[str, Any] = {}
+    last_orphan_audio_warn_ms = 0.0
 
     try:
         while True:
+            if forward_task is not None and forward_task.done():
+                try:
+                    await forward_task
+                except Exception as exc:
+                    await send_backend_message(
+                        websocket,
+                        BackendMessage(
+                            type="error",
+                            detail=f"forward_task_stopped: {exc}",
+                        ),
+                    )
+                forward_task = None
+                live_bridge = None
+
             raw = await websocket.receive_text()
             message = parse_device_message(raw)
 
@@ -287,14 +333,17 @@ async def device_socket(websocket: WebSocket) -> None:
                     audio_bytes = base64.b64decode(message.payload_b64)
                     await live_bridge.send_audio_chunk(audio_bytes)
                     continue
-                await send_backend_message(
-                    websocket,
-                    BackendMessage(
-                        type="backend_status",
-                        session_id=message.session_id,
-                        detail="audio_chunk_received",
-                    ),
-                )
+                now_ms = time.time() * 1000.0
+                if (now_ms - last_orphan_audio_warn_ms) >= 1500.0:
+                    last_orphan_audio_warn_ms = now_ms
+                    await send_backend_message(
+                        websocket,
+                        BackendMessage(
+                            type="backend_status",
+                            session_id=message.session_id,
+                            detail="audio_chunk_ignored_no_live_session",
+                        ),
+                    )
                 continue
 
             if message.type == "interrupt":
@@ -327,6 +376,7 @@ async def device_socket(websocket: WebSocket) -> None:
                 continue
 
             if message.type == "device_status":
+                now_ms = time.time() * 1000.0
                 device_context = {
                     "state": message.state,
                     "heart_rate_bpm": message.heart_rate_bpm,
@@ -339,6 +389,7 @@ async def device_socket(websocket: WebSocket) -> None:
                     "temperature_source": message.temperature_source,
                     "measurement_confidence": message.measurement_confidence,
                     "temperature_validity": message.temperature_validity,
+                    "_updated_at_ms": now_ms,
                 }
                 latest_device_context_by_device_id[message.device_id] = device_context.copy()
                 latest_any_device_context.clear()

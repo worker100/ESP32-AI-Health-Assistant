@@ -43,14 +43,14 @@ enum class SpeakerVolumePreset : uint8_t {
 // 3. High  = 明显放大，适合环境较吵时测试
 // 注意：
 // 这里只是数字音量增益，修改后必须重新编译并烧录固件，开发板上的声音才会变化。
-constexpr float kSpeakerGainLow = 0.35f;
-constexpr float kSpeakerGainMedium = 0.75f;
-constexpr float kSpeakerGainHigh = 1.10f;
+constexpr float kSpeakerGainLow = 0.55f;
+constexpr float kSpeakerGainMedium = 1.25f;
+constexpr float kSpeakerGainHigh = 1.65f;
 
 // 当前默认音量档位：
 // 改成 Low / Medium / High 任意一个，然后重新编译烧录即可生效。
 // 如果你觉得还是太大声，优先先把这里改成 Low，再重新烧录测试。
-constexpr SpeakerVolumePreset kSpeakerVolumePreset = SpeakerVolumePreset::Low;
+constexpr SpeakerVolumePreset kSpeakerVolumePreset = SpeakerVolumePreset::Medium;
 
 constexpr float speakerGainFromPreset(SpeakerVolumePreset preset) {
   return (preset == SpeakerVolumePreset::Low)
@@ -63,7 +63,7 @@ constexpr float kBackendTtsGain = speakerGainFromPreset(kSpeakerVolumePreset);
 
 // 语音 / 后端常用阈值 -------------------------------------------------------
 // 后端状态上报间隔
-constexpr uint32_t kBackendStatusPushMs = 1500;
+constexpr uint32_t kBackendStatusPushMs = 800;
 // 后端断线后重试间隔
 constexpr uint32_t kBackendRetryMs = 5000;
 // Wi-Fi 连接超时时间
@@ -105,6 +105,10 @@ constexpr uint32_t kVoiceListenWindowMs = 4500;
 constexpr uint32_t kHrDisplayHoldMs = 15000;
 // 血氧显示保持时间，超过后可回退为 --
 constexpr uint32_t kSpo2DisplayHoldMs = 25000;
+// 心率稳定显示窗口：窗口内新值只更新内部估计，避免屏幕抖动过快
+constexpr uint32_t kHrDisplayStableWindowMs = 900;
+// 血氧稳定显示窗口：通常比心率略慢一点更稳
+constexpr uint32_t kSpo2DisplayStableWindowMs = 1200;
 // 接受的最小 / 最大心率
 constexpr float kMinAcceptedBpm = 45.0f;
 constexpr float kMaxAcceptedBpm = 125.0f;
