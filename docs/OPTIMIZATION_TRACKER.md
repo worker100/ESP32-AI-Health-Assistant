@@ -52,7 +52,7 @@ Rule: finish one item -> mark `[x]` immediately -> append one line to completion
 - [x] G1. Device status uplink + AI prompt context injection
 - [x] G2. Live sensor values into backend context from main program
   Notes: main firmware now extracts filtered stable health context, logs `CTX ...`, and periodically pushes structured `device_status` to the backend bridge. Backend context is cached by `device_id`, with the main health device preferred when a live voice session starts.
-- [ ] G3. OLED voice state presentation
+- [x] G3. OLED voice state presentation
 - [x] G4. Merge live voice test flow into main firmware
   Notes: main firmware now supports end-to-end voice rounds (`start_session` / `audio_chunk` / `stop_session` / `interrupt` / `tts_chunk` playback) and has been validated on device with real AI replies that reference current health context.
 
@@ -66,9 +66,11 @@ Rule: finish one item -> mark `[x]` immediately -> append one line to completion
 - [x] I1. Unified firmware config header for Wi-Fi / backend / speaker volume / voice thresholds
 - [x] I2. Three speaker volume presets (`Low / Medium / High`) exposed in config header
 - [x] I3. Formal main config entry moved to `firmware/include/project_config.h`
-- [ ] I4. Serial runtime volume command (`VOL LOW/MED/HIGH`)
+- [x] I4. Serial runtime volume command (`VOL LOW/MED/HIGH`)
 
 ## 3. Completion Log (newest first)
+- 2026-03-14: Completed P0-v1 HR/SpO2 fusion upgrade (motion-aware gating, recent algo-HR agreement check for beat path, fallback SpO2 throttling, and adaptive smoothing to balance realtime feel with stability).
+- 2026-03-14: Completed `G3/I4` (OLED now shows compact voice state alongside guidance; serial runtime volume commands `VOL LOW|MED|HIGH|?` added and bound to backend TTS playback gain).
 - 2026-03-14: Started P0 measurement stability tuning (MAX30102 `sampleAverage 4->8`, `adcRange 4096->8192`) to reduce jitter and clipping before algorithm-structure changes.
 - 2026-03-12: Completed full convergence pass for `D3/D4/E3/E4/C3/C4/B4/B5/F1/F2/F3/A5`.
 - 2026-03-14: Completed `G1` (device status uplink + backend prompt context injection for AI replies).

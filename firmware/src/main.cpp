@@ -1,4 +1,4 @@
-#include <Arduino.h>
+﻿#include <Arduino.h>
 #include <WiFi.h>
 #include <ArduinoWebsockets.h>
 #include <ArduinoJson.h>
@@ -61,6 +61,16 @@ constexpr uint8_t kCalibrationMinWindows = 1;
 constexpr uint32_t kBeatRealtimeStaleMs = 2500;
 constexpr float kAlgoHrMinQualityRatio = 0.28f;
 constexpr float kAlgoHrMaxDeltaFromDisplay = 15.0f;
+constexpr uint32_t kAlgoHrFreshMs = 4000;
+constexpr float kHrBeatAlgoAgreeLowMotionBpm = 14.0f;
+constexpr float kHrBeatAlgoAgreeHighMotionBpm = 10.0f;
+constexpr float kHrMotionAccelDevQuiet = 0.10f;
+constexpr float kHrMotionGyroQuietDps = 45.0f;
+constexpr float kHrMotionAccelDevHard = 0.22f;
+constexpr float kHrMotionGyroHardDps = 85.0f;
+constexpr uint8_t kSpo2FallbackMaxConsecutive = 3;
+constexpr float kSpo2FallbackMinQualityRatio = 0.30f;
+constexpr uint8_t kSpo2FallbackMinConfidence = 45;
 constexpr float kLowHrGuardFloorBpm = 52.0f;
 constexpr uint8_t kLowHrGuardMinConfidence = 40;
 constexpr uint8_t kLowHrGuardConsecutiveRequired = 3;
@@ -180,6 +190,11 @@ enum class GuidanceHint {
   LowPerfusion,
   Unstable,
   Spo2Weak,
+};
+
+enum class LogProfile {
+  Demo,
+  Full,
 };
 
 constexpr uint32_t kEvtFallFreeFall = 1UL << 0;
@@ -335,17 +350,21 @@ bool g_backendWsReady = false;
 bool g_backendHelloSent = false;
 bool g_backendWifiStarted = false;
 bool g_backendBridgeEnabled = kProjectBackendBridgeDefaultEnabled;
+SpeakerVolumePreset g_runtimeSpeakerPreset = kSpeakerVolumePreset;
+float g_runtimeBackendTtsGain = kBackendTtsGain;
 bool g_backendVoiceSessionActive = false;
 bool g_backendWaitingForReply = false;
 bool g_backendTtsStreaming = false;
 bool g_backendInterruptArmed = false;
 bool g_backendStopRequested = false;
+LogProfile g_logProfile = LogProfile::Demo;
 uint8_t g_backendInterruptFrames = 0;
 uint32_t g_backendVoiceSessionIdCounter = 0;
 uint32_t g_backendLastStreamMs = 0;
 uint32_t g_backendLastStatusPushMs = 0;
 uint32_t g_backendLastSpeakerRate = 0;
 String g_backendSessionId = "main-status";
+String g_backendReplyTextBuffer;
 uint32_t g_backendWifiStartMs = 0;
 uint32_t g_lastBackendRetryMs = 0;
 bool g_pendingPromptTone = false;
@@ -360,6 +379,10 @@ uint32_t g_lastLoopDurationUs = 0;
 uint32_t g_maxLoopDurationUs = 0;
 uint32_t g_lastMaxSampleMs = 0;
 uint8_t g_maxSampleStallCount = 0;
+float g_lastAlgoHrBpm = 0.0f;
+bool g_lastAlgoHrValid = false;
+uint32_t g_lastAlgoHrMs = 0;
+uint8_t g_spo2FallbackUseStreak = 0;
 
 float medianFromHistory(const float* history, uint8_t count) {
   if (count == 0) {
@@ -441,8 +464,12 @@ void resetMeasurementFilters() {
   g_spo2ValidStreak = 0;
   g_spo2InvalidStreak = 0;
   g_lowHrCandidateStreak = 0;
+  g_spo2FallbackUseStreak = 0;
   g_lastBeatMs = 0;
   g_currentPerfusionIndex = 0.0f;
+  g_lastAlgoHrBpm = 0.0f;
+  g_lastAlgoHrValid = false;
+  g_lastAlgoHrMs = 0;
   g_vitals.heartRateBpm = 0.0f;
   g_vitals.spo2Percent = 0.0f;
   g_vitals.heartRateDisplayBpm = 0.0f;
@@ -678,6 +705,26 @@ const char* voiceStateText(VoiceState state) {
   return (state == VoiceState::Listen) ? "LISTEN" : "IDLE";
 }
 
+const char* speakerVolumePresetText(SpeakerVolumePreset preset) {
+  switch (preset) {
+    case SpeakerVolumePreset::Low:
+      return "LOW";
+    case SpeakerVolumePreset::Medium:
+      return "MED";
+    case SpeakerVolumePreset::High:
+      return "HIGH";
+  }
+  return "UNK";
+}
+
+const char* logProfileText(LogProfile profile) {
+  return (profile == LogProfile::Full) ? "FULL" : "DEMO";
+}
+
+bool isFullLogProfile() {
+  return g_logProfile == LogProfile::Full;
+}
+
 const char* guidanceText(GuidanceHint hint) {
   switch (hint) {
     case GuidanceHint::None:
@@ -866,6 +913,11 @@ void setFallProfile(FallProfile profile, bool announce = true) {
   g_pendingPromptTone = true;
 }
 
+void setRuntimeSpeakerVolumePreset(SpeakerVolumePreset preset) {
+  g_runtimeSpeakerPreset = preset;
+  g_runtimeBackendTtsGain = speakerGainFromPreset(preset);
+}
+
 void pollSerialCommands(uint32_t now) {
   if ((now - g_lastSerialCmdPollMs) < kSerialCmdPollMs || !Serial.available()) {
     return;
@@ -883,8 +935,45 @@ void pollSerialCommands(uint32_t now) {
   } else if (cmd == "MODE?" || cmd == "FALL?") {
     Serial.print("Fall profile=");
     Serial.println(fallProfileText(g_fallProfile));
+  } else if (cmd == "VOL LOW") {
+    setRuntimeSpeakerVolumePreset(SpeakerVolumePreset::Low);
+    Serial.print("Volume preset=");
+    Serial.print(speakerVolumePresetText(g_runtimeSpeakerPreset));
+    Serial.print(" gain=");
+    Serial.println(g_runtimeBackendTtsGain, 2);
+  } else if (cmd == "VOL MED" || cmd == "VOL MEDIUM") {
+    setRuntimeSpeakerVolumePreset(SpeakerVolumePreset::Medium);
+    Serial.print("Volume preset=");
+    Serial.print(speakerVolumePresetText(g_runtimeSpeakerPreset));
+    Serial.print(" gain=");
+    Serial.println(g_runtimeBackendTtsGain, 2);
+  } else if (cmd == "VOL HIGH") {
+    setRuntimeSpeakerVolumePreset(SpeakerVolumePreset::High);
+    Serial.print("Volume preset=");
+    Serial.print(speakerVolumePresetText(g_runtimeSpeakerPreset));
+    Serial.print(" gain=");
+    Serial.println(g_runtimeBackendTtsGain, 2);
+  } else if (cmd == "VOL?" || cmd == "VOLUME?") {
+    Serial.print("Volume preset=");
+    Serial.print(speakerVolumePresetText(g_runtimeSpeakerPreset));
+    Serial.print(" gain=");
+    Serial.println(g_runtimeBackendTtsGain, 2);
+  } else if (cmd == "LOG DEMO") {
+    g_logProfile = LogProfile::Demo;
+    Serial.print("Log profile=");
+    Serial.println(logProfileText(g_logProfile));
+  } else if (cmd == "LOG FULL") {
+    g_logProfile = LogProfile::Full;
+    Serial.print("Log profile=");
+    Serial.println(logProfileText(g_logProfile));
+  } else if (cmd == "LOG?") {
+    Serial.print("Log profile=");
+    Serial.println(logProfileText(g_logProfile));
   } else if (cmd == "HELP") {
-    Serial.println("Commands: MODE TEST | MODE NORMAL | MODE? | FALL? | HEALTH? | BACKEND? | BACKEND ON | BACKEND OFF");
+    Serial.println(
+        "Commands: MODE TEST | MODE NORMAL | MODE? | FALL? | HEALTH? | BACKEND? | "
+        "BACKEND ON | BACKEND OFF | VOL LOW | VOL MED | VOL HIGH | VOL? | "
+        "LOG DEMO | LOG FULL | LOG?");
   } else if (cmd == "HEALTH?") {
     Serial.print("Health i2cErr=");
     Serial.print(g_i2cErrorCount);
@@ -912,7 +1001,12 @@ void pollSerialCommands(uint32_t now) {
     Serial.print(" voice=");
     Serial.print(g_backendVoiceSessionActive ? "STREAM" : (g_backendTtsStreaming ? "TTS" : (g_backendWaitingForReply ? "WAIT_REPLY" : "IDLE")));
     Serial.print(" sid=");
-    Serial.println(g_backendSessionId);
+    Serial.print(g_backendSessionId);
+    Serial.print(" vol=");
+    Serial.print(speakerVolumePresetText(g_runtimeSpeakerPreset));
+    Serial.print("(");
+    Serial.print(g_runtimeBackendTtsGain, 2);
+    Serial.println(")");
   } else if (cmd == "BACKEND ON") {
     if (!g_backendBridgeEnabled) {
       g_backendBridgeEnabled = true;
@@ -941,6 +1035,9 @@ void updateHealthSnapshot(uint32_t now, uint32_t loopStartUs) {
   }
 
   if ((now - g_lastHealthLogMs) < kHealthLogMs) {
+    return;
+  }
+  if (!isFullLogProfile()) {
     return;
   }
   g_lastHealthLogMs = now;
@@ -2008,7 +2105,18 @@ void updateSensor() {
         continue;
       }
 
-      const bool algoHrAccepted = signalQualityOk && (qualityRatio >= kAlgoHrMinQualityRatio) &&
+      const float accelDev = g_mpuSample.valid ? fabsf(g_mpuSample.accelMagG - 1.0f) : 0.0f;
+      const float gyroMotion = g_mpuSample.valid ? g_mpuSample.gyroMaxDps : 0.0f;
+      const bool lowMotion = !g_mpuSample.valid ||
+                             (accelDev <= kHrMotionAccelDevQuiet &&
+                              gyroMotion <= kHrMotionGyroQuietDps);
+      const bool hardMotion = g_mpuSample.valid &&
+                              (accelDev >= kHrMotionAccelDevHard ||
+                               gyroMotion >= kHrMotionGyroHardDps);
+      const bool stableForWindow = !hardMotion || (qualityRatio >= 0.70f);
+
+      const bool algoHrAccepted = signalQualityOk && stableForWindow &&
+                                  (qualityRatio >= kAlgoHrMinQualityRatio) &&
                                   (g_signalConfidence >= 30) &&
                                   algoHeartRateValid &&
                                   algoHeartRate >= static_cast<int32_t>(kMinAcceptedBpm) &&
@@ -2042,42 +2150,41 @@ void updateSensor() {
         }
 
         if (jumpOk) {
+          const float algoHrAlpha =
+              (g_signalConfidence >= 75 && lowMotion) ? 0.30f : kHrAlgoFallbackAlpha;
           if (!g_vitals.heartRateValid) {
             g_vitals.heartRateValid = true;
             g_vitals.heartRateBpm = algoBpm;
           } else {
             g_vitals.heartRateBpm =
-                (1.0f - kHrAlgoFallbackAlpha) * g_vitals.heartRateBpm + kHrAlgoFallbackAlpha * algoBpm;
+                (1.0f - algoHrAlpha) * g_vitals.heartRateBpm + algoHrAlpha * algoBpm;
           }
           g_vitals.lastHrUpdateMs = now;
+          g_lastAlgoHrValid = true;
+          g_lastAlgoHrBpm = algoBpm;
+          g_lastAlgoHrMs = now;
 
           const bool beatStale = !g_vitals.heartRateRealtimeValid ||
                                  (now - g_vitals.lastHrBeatAcceptedMs) > kBeatRealtimeStaleMs;
           if (beatStale) {
-            refreshHrDisplayValue(algoBpm, now, kHrAlgoFallbackAlpha);
-    }
-  }
-
-  const uint32_t now = millis();
-  if (!consumedAnySample && (now - g_lastMaxSampleMs) > kMaxSampleStallMs) {
-    if (g_maxSampleStallCount < 255) {
-      ++g_maxSampleStallCount;
-    }
-    if (g_maxSampleStallCount >= kMaxSampleStallReinitThreshold) {
-      Serial.println("MAX30102 sample stall, reinit...");
-      initMax30102();
-      g_maxSampleStallCount = 0;
-      publishEvent(kEvtSensorRecovered);
-    }
-    g_lastMaxSampleMs = now;
-  }
-}
+            refreshHrDisplayValue(algoBpm, now, algoHrAlpha);
+          }
+        }
+      } else if (g_lastAlgoHrValid && (now - g_lastAlgoHrMs) > kAlgoHrFreshMs) {
+        g_lastAlgoHrValid = false;
+        g_lastAlgoHrBpm = 0.0f;
+      }
 
       float fallbackSpo2 = 0.0f;
       const bool fallbackSpo2Valid =
           estimateSpo2FromWindowFallback(irDcU32, irAcP2P, redDcU32, redAcP2P, &fallbackSpo2);
       const bool algoSpo2Accepted = spo2Valid && (qualityRatio >= (kSpo2MinQualityRatio * 0.5f)) &&
                                     spo2 >= kMinAcceptedSpo2 && spo2 <= kMaxAcceptedSpo2;
+      const bool fallbackAllowed = lowMotion &&
+                                   !hardMotion &&
+                                   (qualityRatio >= kSpo2FallbackMinQualityRatio) &&
+                                   (g_signalConfidence >= kSpo2FallbackMinConfidence) &&
+                                   (g_spo2FallbackUseStreak < kSpo2FallbackMaxConsecutive);
 
       bool spo2CandidateReady = false;
       bool spo2FromAlgo = false;
@@ -2086,9 +2193,15 @@ void updateSensor() {
         spo2Candidate = static_cast<float>(spo2);
         spo2CandidateReady = true;
         spo2FromAlgo = true;
-      } else if (fallbackSpo2Valid) {
+        g_spo2FallbackUseStreak = 0;
+      } else if (fallbackSpo2Valid && fallbackAllowed) {
         spo2Candidate = fallbackSpo2;
         spo2CandidateReady = true;
+        if (g_spo2FallbackUseStreak < 255) {
+          ++g_spo2FallbackUseStreak;
+        }
+      } else {
+        g_spo2FallbackUseStreak = 0;
       }
 
       if (spo2CandidateReady) {
@@ -2119,23 +2232,30 @@ void updateSensor() {
               g_vitals.lastSpo2UpdateMs = now;
             }
           } else {
+            const float spo2Alpha =
+                spo2FromAlgo
+                    ? ((g_signalConfidence >= 70 && lowMotion) ? 0.28f : kSpo2EwmaAlpha)
+                    : 0.14f;
             g_vitals.spo2Percent =
-                (1.0f - kSpo2EwmaAlpha) * g_vitals.spo2Percent + kSpo2EwmaAlpha * spo2Median;
+                (1.0f - spo2Alpha) * g_vitals.spo2Percent + spo2Alpha * spo2Median;
             g_vitals.lastSpo2UpdateMs = now;
           }
 
           float spo2Realtime = spo2Candidate;
           if (g_vitals.spo2RealtimeValid) {
-            const float delta = spo2Realtime - g_vitals.spo2RealtimePercent;
-            if (fabsf(delta) > kSpo2RealtimeMaxJump) {
+            const float deltaSpo2 = spo2Realtime - g_vitals.spo2RealtimePercent;
+            if (fabsf(deltaSpo2) > kSpo2RealtimeMaxJump) {
               spo2Realtime = g_vitals.spo2RealtimePercent +
-                             ((delta > 0.0f) ? kSpo2RealtimeMaxJump : -kSpo2RealtimeMaxJump);
+                             ((deltaSpo2 > 0.0f) ? kSpo2RealtimeMaxJump : -kSpo2RealtimeMaxJump);
             }
           }
           g_vitals.spo2RealtimePercent = spo2Realtime;
           g_vitals.spo2RealtimeValid = true;
 
-          refreshSpo2DisplayValue(spo2Realtime, now, kSpo2DisplayAlpha);
+          const float spo2DisplayAlpha =
+              spo2FromAlgo ? ((g_signalConfidence >= 70 && lowMotion) ? 0.30f : kSpo2DisplayAlpha)
+                           : 0.16f;
+          refreshSpo2DisplayValue(spo2Realtime, now, spo2DisplayAlpha);
         } else {
           g_spo2ValidStreak = 0;
           if (g_spo2InvalidStreak < 255) {
@@ -2176,10 +2296,29 @@ void updateSensor() {
         const uint32_t delta = now - g_lastBeatMs;
         if (delta > 0) {
           const float bpm = 60000.0f / static_cast<float>(delta);
+          const float beatAccelDev = g_mpuSample.valid ? fabsf(g_mpuSample.accelMagG - 1.0f) : 0.0f;
+          const float beatGyro = g_mpuSample.valid ? g_mpuSample.gyroMaxDps : 0.0f;
+          const bool beatLowMotion = !g_mpuSample.valid ||
+                                     (beatAccelDev <= kHrMotionAccelDevQuiet &&
+                                      beatGyro <= kHrMotionGyroQuietDps);
+          const bool beatHardMotion = g_mpuSample.valid &&
+                                      (beatAccelDev >= kHrMotionAccelDevHard ||
+                                       beatGyro >= kHrMotionGyroHardDps);
+
           bool accepted = bpm >= kMinAcceptedBpm && bpm <= kMaxAcceptedBpm;
+          if (accepted && beatHardMotion && g_signalConfidence < 70) {
+            accepted = false;
+          }
           if (accepted && g_vitals.heartRateValid &&
               fabsf(bpm - g_vitals.heartRateBpm) > kMaxHrJumpPerUpdate) {
             accepted = false;
+          }
+          if (accepted && g_lastAlgoHrValid && (now - g_lastAlgoHrMs) <= kAlgoHrFreshMs) {
+            const float agreeLimit =
+                beatLowMotion ? kHrBeatAlgoAgreeLowMotionBpm : kHrBeatAlgoAgreeHighMotionBpm;
+            if (fabsf(bpm - g_lastAlgoHrBpm) > agreeLimit) {
+              accepted = false;
+            }
           }
           if (accepted && g_vitals.heartRateDisplayValid) {
             const float displayDeltaLimit =
@@ -2219,23 +2358,27 @@ void updateSensor() {
                 g_vitals.lastHrUpdateMs = now;
               }
             } else {
+              const float hrAlpha =
+                  (g_signalConfidence >= 70 && beatLowMotion) ? kHrEwmaAlpha : 0.20f;
               g_vitals.heartRateBpm =
-                  (1.0f - kHrEwmaAlpha) * g_vitals.heartRateBpm + kHrEwmaAlpha * hrMedian;
+                  (1.0f - hrAlpha) * g_vitals.heartRateBpm + hrAlpha * hrMedian;
               g_vitals.lastHrUpdateMs = now;
             }
 
             float realtime = bpm;
             if (g_vitals.heartRateRealtimeValid) {
-              const float delta = realtime - g_vitals.heartRateRealtimeBpm;
-              if (fabsf(delta) > kHrRealtimeMaxJump) {
+              const float deltaHr = realtime - g_vitals.heartRateRealtimeBpm;
+              if (fabsf(deltaHr) > kHrRealtimeMaxJump) {
                 realtime = g_vitals.heartRateRealtimeBpm +
-                           ((delta > 0.0f) ? kHrRealtimeMaxJump : -kHrRealtimeMaxJump);
+                           ((deltaHr > 0.0f) ? kHrRealtimeMaxJump : -kHrRealtimeMaxJump);
               }
             }
             g_vitals.heartRateRealtimeBpm = realtime;
             g_vitals.heartRateRealtimeValid = true;
 
-            refreshHrDisplayValue(realtime, now, kHrDisplayAlpha);
+            const float hrDisplayAlpha =
+                (g_signalConfidence >= 70 && beatLowMotion) ? kHrDisplayAlpha : 0.20f;
+            refreshHrDisplayValue(realtime, now, hrDisplayAlpha);
             g_vitals.lastHrBeatAcceptedMs = now;
           } else {
             g_hrValidStreak = 0;
@@ -2247,6 +2390,20 @@ void updateSensor() {
       }
       g_lastBeatMs = now;
     }
+  }
+
+  const uint32_t now = millis();
+  if (!consumedAnySample && (now - g_lastMaxSampleMs) > kMaxSampleStallMs) {
+    if (g_maxSampleStallCount < 255) {
+      ++g_maxSampleStallCount;
+    }
+    if (g_maxSampleStallCount >= kMaxSampleStallReinitThreshold) {
+      Serial.println("MAX30102 sample stall, reinit...");
+      initMax30102();
+      g_maxSampleStallCount = 0;
+      publishEvent(kEvtSensorRecovered);
+    }
+    g_lastMaxSampleMs = now;
   }
 
   if (g_vitals.fingerDetected && g_vitals.heartRateValid &&
@@ -2278,7 +2435,6 @@ void updateSensor() {
     g_vitals.spo2RealtimePercent = 0.0f;
   }
 }
-
 AiHealthContextSnapshot buildAiHealthContextSnapshot() {
   AiHealthContextSnapshot ctx;
   ctx.heartRateValid = g_vitals.heartRateDisplayValid;
@@ -2383,6 +2539,25 @@ const char* backendVoiceStateText() {
     return "alerting";
   }
   return "idle";
+}
+
+const char* backendVoiceStateUiText() {
+  if (g_backendTtsStreaming) {
+    return "SPK";
+  }
+  if (g_backendWaitingForReply || g_backendVoiceSessionActive) {
+    return "THK";
+  }
+  if (!g_voiceCalibrated) {
+    return "CAL";
+  }
+  if (g_voiceState == VoiceState::Listen || g_voiceActive) {
+    return "LSN";
+  }
+  if (g_systemMode == SystemMode::Alerting) {
+    return "ALR";
+  }
+  return "IDL";
 }
 
 bool encodeBackendBase64(const uint8_t* input, size_t inputLen, char* output, size_t outputCap) {
@@ -2524,7 +2699,7 @@ void playBackendPcmChunk(const String& payloadB64) {
   int16_t* samples = reinterpret_cast<int16_t*>(raw);
   const size_t sampleCount = decodedLen / sizeof(int16_t);
   for (size_t i = 0; i < sampleCount; ++i) {
-    int32_t scaled = static_cast<int32_t>(samples[i] * kBackendTtsGain);
+    int32_t scaled = static_cast<int32_t>(samples[i] * g_runtimeBackendTtsGain);
     if (scaled > 32767) {
       scaled = 32767;
     } else if (scaled < -32768) {
@@ -2576,17 +2751,13 @@ void onBackendMessage(websockets::WebsocketsMessage message) {
   const char* type = doc["type"] | "";
   const char* detail = doc["detail"] | "";
   const char* text = doc["text"] | "";
-  Serial.print("BWS type=");
-  Serial.print(type);
-  if (strlen(detail) > 0) {
-    Serial.print(" detail=");
-    Serial.print(detail);
+
+  if (strcmp(type, "reply_text") == 0) {
+    if (strlen(text) > 0) {
+      g_backendReplyTextBuffer += text;
+    }
+    return;
   }
-  if (strlen(text) > 0) {
-    Serial.print(" text=");
-    Serial.print(text);
-  }
-  Serial.println();
 
   if (strcmp(type, "session_started") == 0) {
     g_backendVoiceSessionActive = true;
@@ -2594,11 +2765,22 @@ void onBackendMessage(websockets::WebsocketsMessage message) {
     g_backendInterruptArmed = false;
     g_backendStopRequested = false;
     g_backendInterruptFrames = 0;
+    g_backendReplyTextBuffer = "";
+    Serial.println("BWS type=session_started");
     sendBackendDeviceStatus(buildAiHealthContextSnapshot());
     return;
   }
 
   if (strcmp(type, "backend_status") == 0) {
+    const bool noisyDeviceState = strncmp(detail, "device_state=", 13) == 0;
+    if (isFullLogProfile() || !noisyDeviceState) {
+      Serial.print("BWS type=backend_status");
+      if (strlen(detail) > 0) {
+        Serial.print(" detail=");
+        Serial.print(detail);
+      }
+      Serial.println();
+    }
     if (strcmp(detail, "interrupt_ack") == 0 || strcmp(detail, "session_stop_ack") == 0 ||
         strcmp(detail, "audio_chunk_ignored_no_live_session") == 0) {
       g_backendTtsStreaming = false;
@@ -2607,6 +2789,7 @@ void onBackendMessage(websockets::WebsocketsMessage message) {
       g_backendInterruptArmed = false;
       g_backendStopRequested = false;
       g_backendInterruptFrames = 0;
+      g_backendReplyTextBuffer = "";
       Serial.println("Backend session cleared -> monitoring");
       sendBackendDeviceStatus(buildAiHealthContextSnapshot());
     }
@@ -2614,12 +2797,19 @@ void onBackendMessage(websockets::WebsocketsMessage message) {
   }
 
   if (strcmp(type, "error") == 0) {
+    Serial.print("BWS type=error");
+    if (strlen(detail) > 0) {
+      Serial.print(" detail=");
+      Serial.print(detail);
+    }
+    Serial.println();
     g_backendTtsStreaming = false;
     g_backendVoiceSessionActive = false;
     g_backendWaitingForReply = false;
     g_backendInterruptArmed = false;
     g_backendStopRequested = false;
     g_backendInterruptFrames = 0;
+    g_backendReplyTextBuffer = "";
     i2s_zero_dma_buffer(kI2sPort);
     Serial.println("Backend error -> reset voice session state");
     sendBackendDeviceStatus(buildAiHealthContextSnapshot());
@@ -2636,16 +2826,43 @@ void onBackendMessage(websockets::WebsocketsMessage message) {
   }
 
   if (strcmp(type, "tts_end") == 0) {
+    const char* roundText = doc["text"] | "";
+    if (strlen(roundText) > 0) {
+      g_backendReplyTextBuffer = String(roundText);
+    }
     g_backendTtsStreaming = false;
     g_backendVoiceSessionActive = false;
     g_backendWaitingForReply = false;
     g_backendInterruptArmed = false;
     g_backendStopRequested = false;
     g_backendInterruptFrames = 0;
+    Serial.print("BWS type=tts_end");
+    if (strlen(detail) > 0) {
+      Serial.print(" detail=");
+      Serial.print(detail);
+    }
+    Serial.println();
+    if (g_backendReplyTextBuffer.length() > 0) {
+      Serial.print("AI=");
+      Serial.println(g_backendReplyTextBuffer);
+    }
+    g_backendReplyTextBuffer = "";
     Serial.println("Backend voice round complete");
     sendBackendDeviceStatus(buildAiHealthContextSnapshot());
     return;
   }
+
+  Serial.print("BWS type=");
+  Serial.print(type);
+  if (strlen(detail) > 0) {
+    Serial.print(" detail=");
+    Serial.print(detail);
+  }
+  if (strlen(text) > 0) {
+    Serial.print(" text=");
+    Serial.print(text);
+  }
+  Serial.println();
 }
 
 bool connectBackendSocket() {
@@ -2881,8 +3098,14 @@ void renderUi() {
   display.setTextSize(1);
   display.setCursor(72, 58);
   display.print(guidanceUiText(g_guidanceHint));
+  display.print("/");
+  display.print(backendVoiceStateUiText());
 
   display.display();
+
+  if (!isFullLogProfile()) {
+    return;
+  }
 
   if (now - g_lastSerialLogMs < kSerialLogMs) {
     return;
@@ -2984,9 +3207,12 @@ void setup() {
   Serial.begin(115200);
   delay(300);
   Serial.println("Booting ESP32 AI Health Assistant...");
+  setRuntimeSpeakerVolumePreset(kSpeakerVolumePreset);
   g_fallProfile = FallProfile::Normal;
   printFallThresholds();
-  Serial.println("Cmd: MODE TEST | MODE NORMAL | MODE? | HEALTH? | BACKEND? | BACKEND ON | BACKEND OFF");
+  Serial.println(
+      "Cmd: MODE TEST | MODE NORMAL | MODE? | HEALTH? | BACKEND? | BACKEND ON | "
+      "BACKEND OFF | VOL LOW | VOL MED | VOL HIGH | VOL? | LOG DEMO | LOG FULL | LOG?");
 
   initI2c();
   i2cScan();
@@ -3030,3 +3256,4 @@ void loop() {
   renderUi();
   updateHealthSnapshot(now, loopStartUs);
 }
+

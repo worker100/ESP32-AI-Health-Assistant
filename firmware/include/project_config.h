@@ -50,7 +50,7 @@ constexpr float kSpeakerGainHigh = 1.65f;
 // 当前默认音量档位：
 // 改成 Low / Medium / High 任意一个，然后重新编译烧录即可生效。
 // 如果你觉得还是太大声，优先先把这里改成 Low，再重新烧录测试。
-constexpr SpeakerVolumePreset kSpeakerVolumePreset = SpeakerVolumePreset::Medium;
+constexpr SpeakerVolumePreset kSpeakerVolumePreset = SpeakerVolumePreset::Low;
 
 constexpr float speakerGainFromPreset(SpeakerVolumePreset preset) {
   return (preset == SpeakerVolumePreset::Low)
