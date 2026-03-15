@@ -38,6 +38,7 @@ void updateFallState(uint32_t now) {
           g_fallState = FallState::Impact;
           g_impactMs = now;
           g_stillSinceMs = 0;
+          g_impactCandidateMs = 0;
         }
       } else if (g_mpuSample.accelMagG > 0.90f) {
         g_fallState = FallState::Normal;
@@ -48,9 +49,17 @@ void updateFallState(uint32_t now) {
 
     case FallState::Impact:
       if (recoveredNow) {
-        g_fallState = FallState::Normal;
-        g_cooldownUntilMs = now + kFallCooldownMs;
+        if (g_impactCandidateMs == 0) {
+          g_impactCandidateMs = now;
+        }
+        const bool recoveryGuardPassed = (now - g_impactMs) >= kImpactRecoveryGuardMs;
+        const bool recoveredConfirmed = (now - g_impactCandidateMs) >= kRecoveryConfirmMinMs;
+        if (recoveryGuardPassed && recoveredConfirmed) {
+          g_fallState = FallState::Normal;
+          g_cooldownUntilMs = now + kFallCooldownMs;
+        }
       } else if (stillNow) {
+        g_impactCandidateMs = 0;
         if (g_stillSinceMs == 0) {
           g_stillSinceMs = now;
         }
@@ -62,6 +71,7 @@ void updateFallState(uint32_t now) {
       } else if (now - g_impactMs > 3000U) {
         g_fallState = FallState::Normal;
       } else {
+        g_impactCandidateMs = 0;
         g_stillSinceMs = 0;
       }
       break;
@@ -581,11 +591,9 @@ void updateSensor() {
 }
 AiHealthContextSnapshot buildAiHealthContextSnapshot() {
   AiHealthContextSnapshot ctx;
-  ctx.heartRateValid = g_vitals.heartRateDisplayValid;
-  ctx.spo2Valid = g_vitals.spo2DisplayValid;
+  ctx.heartRateValid = selectVisibleHeartRate(ctx.heartRateBpm);
+  ctx.spo2Valid = selectVisibleSpo2(ctx.spo2Percent);
   ctx.temperatureValid = g_temperature.valid;
-  ctx.heartRateBpm = g_vitals.heartRateDisplayBpm;
-  ctx.spo2Percent = g_vitals.spo2DisplayPercent;
   ctx.temperatureC = g_temperature.objectC;
   ctx.fingerDetected = g_vitals.fingerDetected;
   ctx.signalQuality = currentSignalQuality();

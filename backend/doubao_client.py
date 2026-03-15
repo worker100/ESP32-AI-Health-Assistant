@@ -54,11 +54,11 @@ class DoubaoRealtimeBridge:
 
         hr = device_context.get("heart_rate_bpm")
         if hr is not None:
-            parts.append(f"heart_rate_bpm={hr:.1f}")
+            parts.append(f"heart_rate_bpm={int(round(hr))}")
 
         spo2 = device_context.get("spo2_percent")
         if spo2 is not None:
-            parts.append(f"spo2_percent={spo2:.1f}")
+            parts.append(f"spo2_percent={int(round(spo2))}")
 
         temp = device_context.get("temperature_c")
         if temp is not None:

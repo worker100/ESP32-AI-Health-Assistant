@@ -22,6 +22,8 @@ void startCalibration(uint32_t now);
 void refreshHrDisplayValue(float candidateBpm, uint32_t now, float alpha);
 void refreshSpo2DisplayValue(float candidateSpo2, uint32_t now, float alpha);
 void autoTuneLedAmplitude(uint32_t irDc, uint32_t now);
+bool selectVisibleHeartRate(float& outBpm);
+bool selectVisibleSpo2(float& outPercent);
 
 // 顶层运行任务（top-level tasks）。
 void updateSystemModeAndEvents(uint32_t now);

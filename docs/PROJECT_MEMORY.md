@@ -1,6 +1,6 @@
 ﻿# PROJECT MEMORY - ESP32 AI Health Assistant
 
-更新时间：2026-03-15（结构解耦持续推进，测试代码已独立到 test_apps）
+更新时间：2026-03-15（结构解耦持续推进，完成 OLED/AI 数值同步收口）
 
 ## 1. 项目定位（Project Scope）
 - 项目名：ESP32 AI Health Assistant（基于 ESP32-S3 的 AI 智能健康助手系统）
@@ -1004,3 +1004,31 @@
   - 语音轮次可正常完成 `start_session -> stream -> stop -> tts_end`。
 - 现阶段结论：
   - 当前版本已具备毕业设计演示与论文撰写基础；后续以“算法精度统计与对照实验报告”作为增量优化主线。
+
+## 53. 2026-03-15 OLED 与 AI 数值一致性优化（Same-source + Same-cadence）
+- 目标：
+  - 解决“同一时刻 OLED 显示值与 AI 回复引用值不一致”的体验问题。
+- 本轮实现（已并入主线）：
+  - 统一数据来源：
+    - OLED 与 AI 上下文都改为复用同一组可见值选择函数：
+      - `selectVisibleHeartRate(...)`
+      - `selectVisibleSpo2(...)`
+    - 优先 realtime，回退 stable，避免两端取值口径不同。
+  - 统一刷新节奏：
+    - 新增编译时配置（位于 `firmware/include/project_config.h`）：
+      - `AI_HEALTH_CFG_UI_REFRESH_MS`（默认 `120ms`）
+      - `AI_HEALTH_CFG_BACKEND_STATUS_PUSH_MS`（默认跟随 UI 刷新）
+      - `AI_HEALTH_CFG_TEMP_READ_MS`（默认 `500ms`）
+    - `runtime_constants.h` 改为读取上述宏，不再固定硬编码。
+  - 统一问询时序：
+    - 后端请求 `request_fresh_status` 时，固件先触发一次 `renderUi()`，再上报 `device_status`，
+      降低“AI 拿到旧值而屏幕已更新”的时间窗。
+  - 统一展示格式：
+    - backend 侧注入上下文时将 `heart_rate_bpm/spo2_percent` 四舍五入为整数，
+      与 OLED 显示风格更一致（温度仍保留 1 位小数）。
+- 验证结果：
+  - `python -m py_compile backend/main.py backend/doubao_client.py` 通过。
+  - `pio run -d firmware -e esp32-s3-devkitc-1` 通过。
+  - 语音问“现在这些数值正常吗”时，AI 可基于当前上下文引用设备数值进行判断（并保留置信度提示）。
+- 说明：
+  - 已做到“同源 + 同频 + 新鲜状态优先”；由于网络与语音链路延迟，无法保证严格 0ms 完全同步。

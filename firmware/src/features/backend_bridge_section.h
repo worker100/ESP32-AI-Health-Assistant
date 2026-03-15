@@ -207,13 +207,20 @@ void sendBackendDeviceStatus(const AiHealthContextSnapshot& ctx) {
   doc["temperature_source"] = ctx.tempSource;
   doc["measurement_confidence"] = ctx.measurementConfidence;
   doc["temperature_validity"] = ctx.temperatureValidity;
-  if (ctx.heartRateValid) {
+  // Keep display values in upload payload when available.
+  // Reliability is still described by confidence/validity fields.
+  const bool hasHrValue = isfinite(ctx.heartRateBpm) && ctx.heartRateBpm > 1.0f;
+  const bool hasSpo2Value = isfinite(ctx.spo2Percent) && ctx.spo2Percent > 1.0f;
+  const bool hasTempValue =
+      isfinite(ctx.temperatureC) && ctx.temperatureC > -40.0f && ctx.temperatureC < 125.0f;
+
+  if (ctx.heartRateValid || hasHrValue) {
     doc["heart_rate_bpm"] = ctx.heartRateBpm;
   }
-  if (ctx.spo2Valid) {
+  if (ctx.spo2Valid || hasSpo2Value) {
     doc["spo2_percent"] = ctx.spo2Percent;
   }
-  if (ctx.temperatureValid) {
+  if (ctx.temperatureValid || hasTempValue) {
     doc["temperature_c"] = ctx.temperatureC;
   }
   sendBackendJson(doc);
@@ -237,6 +244,15 @@ void onBackendMessage(websockets::WebsocketsMessage message) {
     if (strlen(text) > 0) {
       g_backendReplyTextBuffer += text;
     }
+    return;
+  }
+
+  if (strcmp(type, "request_fresh_status") == 0) {
+    // Force one UI refresh before reporting, so OLED and backend context stay aligned.
+    g_lastUiRefreshMs = 0;
+    renderUi();
+    sendBackendDeviceStatus(buildAiHealthContextSnapshot());
+    Serial.println("BWS type=request_fresh_status -> status pushed");
     return;
   }
 

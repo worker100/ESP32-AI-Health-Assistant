@@ -74,7 +74,14 @@ Rule: finish one item -> mark `[x]` immediately -> append one line to completion
 - [x] J3. Split backend codec and telemetry logging into `src/features`
 - [x] J4. Keep main behavior equivalent while reducing inline logging/codec logic in `main.cpp`
 
+### K. OLED/AI consistency alignment
+- [x] K1. Unify OLED and backend context value source (`selectVisibleHeartRate/SpO2`)
+- [x] K2. Align UI refresh cadence and backend status push cadence via config macros
+- [x] K3. Force one UI refresh before `request_fresh_status` uplink
+- [x] K4. Normalize HR/SpO2 context text formatting for AI prompt readability
+
 ## 3. Completion Log (newest first)
+- 2026-03-15: Completed `K1/K2/K3/K4` (OLED and AI now share the same visible-value selectors; refresh cadence unified through config; `request_fresh_status` now refreshes UI before status upload; HR/SpO2 context formatting normalized for LLM replies).
 - 2026-03-15: Completed voice-context visibility and OLED overlap fixes (keep display values in `AiHealthContextSnapshot` upload path, keep confidence/validity risk labels, compact FALL area rendering), and re-verified all 8 PlatformIO env builds.
 - 2026-03-15: Completed `J1/J2/J3/J4` (test code isolated into `test_apps`; env filters updated; telemetry + backend base64 codec extracted to `src/features`; main firmware behavior preserved and all env builds passed).
 - 2026-03-14: Completed P0-v1 HR/SpO2 fusion upgrade (motion-aware gating, recent algo-HR agreement check for beat path, fallback SpO2 throttling, and adaptive smoothing to balance realtime feel with stability).

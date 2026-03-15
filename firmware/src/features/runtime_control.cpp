@@ -4,7 +4,7 @@
 #include <WiFi.h>
 
 #include <Adafruit_SSD1306.h>
-#include "MAX30105.h"
+#include "../drivers/max30105_compat.h"
 
 #include <algorithm>
 

@@ -3,6 +3,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <driver/i2s.h>
+#include "project_config.h"
 
 static constexpr uint8_t kI2cSda = 8;
 static constexpr uint8_t kI2cScl = 9;
@@ -14,9 +15,15 @@ static constexpr bool kEnableMax30102DieTemp = true;
 static constexpr uint32_t kMax30102TempReadMs = 2000;
 static constexpr int kScreenWidth = 128;
 static constexpr int kScreenHeight = 64;
-static constexpr uint32_t kUiRefreshMs = 250;
+#ifndef AI_HEALTH_UI_REFRESH_MS
+#define AI_HEALTH_UI_REFRESH_MS 250
+#endif
+#ifndef AI_HEALTH_TEMP_READ_MS
+#define AI_HEALTH_TEMP_READ_MS 1000
+#endif
+static constexpr uint32_t kUiRefreshMs = AI_HEALTH_UI_REFRESH_MS;
 static constexpr uint32_t kSerialLogMs = 1000;
-static constexpr uint32_t kTempReadMs = 1000;
+static constexpr uint32_t kTempReadMs = AI_HEALTH_TEMP_READ_MS;
 static constexpr uint32_t kMlxRetryMs = 5000;
 static constexpr uint32_t kBeatTimeoutMs = 12000;
 static constexpr uint32_t kCalibrationDurationMs = 3000;
@@ -102,6 +109,9 @@ static constexpr float kRecoveryAccelThresholdG = 1.55f;
 static constexpr float kRecoveryGyroThresholdDps = 110.0f;
 static constexpr uint32_t kImpactConfirmMinMs = 80;
 static constexpr uint32_t kStillConfirmMinMs = 180;
+// Avoid clearing Impact too early due immediate post-impact rebound.
+static constexpr uint32_t kImpactRecoveryGuardMs = 260;
+static constexpr uint32_t kRecoveryConfirmMinMs = 220;
 static constexpr uint32_t kAggressiveMotionGuardMs = 220;
 static constexpr i2s_port_t kI2sPort = I2S_NUM_0;
 static constexpr int kI2sSampleRate = 16000;

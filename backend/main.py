@@ -19,7 +19,13 @@ latest_device_context_by_device_id: dict[str, dict[str, Any]] = {}
 latest_any_device_context: dict[str, Any] = {}
 PRIMARY_HEALTH_DEVICE_ID = "esp32-ai-health-assistant-main"
 CONTEXT_STALE_MS = 3000.0
+# Keep last valid metrics for a short window when a single device_status frame
+# temporarily omits numeric fields, so fresh sessions don't lose context.
+METRIC_HOLD_MS = 15000.0
+FRESH_STATUS_WAIT_MS = 1400.0
 MAX_DEVICE_CONTEXTS = 32
+context_update_events: dict[str, asyncio.Event] = {}
+routed_text_round_sessions: set[str] = set()
 
 
 @app.get("/health")
@@ -46,6 +52,144 @@ def parse_device_message(raw: str) -> DeviceMessage:
 
 def chunk_bytes(data: bytes, chunk_size: int) -> list[bytes]:
     return [data[i : i + chunk_size] for i in range(0, len(data), chunk_size)]
+
+
+def is_vitals_assessment_query(text: str) -> bool:
+    q = text.strip().lower()
+    if not q:
+        return False
+
+    metric_keywords = (
+        "心率",
+        "血氧",
+        "体温",
+        "指标",
+        "数值",
+        "hr",
+        "spo2",
+        "temperature",
+    )
+    judge_keywords = (
+        "正常",
+        "怎么样",
+        "高不高",
+        "低不低",
+        "有没有问题",
+        "是否正常",
+        "ok",
+        "normal",
+    )
+
+    direct_phrases = (
+        "现在我这个数值正常吗",
+        "我现在的数值正常吗",
+        "这些数值正常吗",
+        "请看一下我现在的数值是否正确",
+        "数值是否正常",
+    )
+
+    if any(phrase in q for phrase in direct_phrases):
+        return True
+    has_metric = any(keyword in q for keyword in metric_keywords)
+    has_judge = any(keyword in q for keyword in judge_keywords)
+    return has_metric and has_judge
+
+
+def build_vitals_assessment_query(user_query: str) -> str:
+    return (
+        f"{user_query}\n"
+        "请严格结合当前设备上下文中的 heart_rate_bpm、spo2_percent、temperature_c 回答。"
+        "先简要复述当前数值，再判断是否大致正常。"
+        "如果 measurement_confidence 为 low/invalid 或 temperature_validity 非 body_screening，"
+        "必须明确提示仅供参考并建议复测。"
+        "不要说你看不到数值，除非上下文确实没有这些字段。"
+    )
+
+
+async def wait_for_fresh_device_context(
+    *,
+    device_id: str,
+    updated_after_ms: float,
+    timeout_ms: float = FRESH_STATUS_WAIT_MS,
+) -> dict[str, Any]:
+    current = latest_device_context_by_device_id.get(device_id, {})
+    current_updated_at = current.get("_updated_at_ms")
+    if isinstance(current_updated_at, (int, float)) and float(current_updated_at) >= updated_after_ms:
+        return current.copy()
+
+    event = context_update_events.setdefault(device_id, asyncio.Event())
+    event.clear()
+    deadline = time.monotonic() + (timeout_ms / 1000.0)
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0.0:
+            break
+        try:
+            await asyncio.wait_for(event.wait(), timeout=remaining)
+        except asyncio.TimeoutError:
+            break
+        event.clear()
+        ctx = latest_device_context_by_device_id.get(device_id, {})
+        updated_at = ctx.get("_updated_at_ms")
+        if isinstance(updated_at, (int, float)) and float(updated_at) >= updated_after_ms:
+            return ctx.copy()
+
+    return latest_device_context_by_device_id.get(device_id, {}).copy()
+
+
+async def run_text_round_and_stream(
+    *,
+    websocket: WebSocket,
+    session_id: str,
+    requester_device_id: str,
+    local_context: dict[str, Any],
+    query: str,
+    tts_end_detail: str,
+) -> None:
+    round_bridge = DoubaoRealtimeBridge()
+    await round_bridge.connect()
+    try:
+        await round_bridge.start_text_session(
+            resolve_device_context(
+                requester_device_id=requester_device_id,
+                local_context=local_context,
+            )
+        )
+        result = await round_bridge.collect_text_round(query=query)
+        reply_text = result.get("reply_text", "")
+        if reply_text:
+            await send_backend_message(
+                websocket,
+                BackendMessage(
+                    type="reply_text",
+                    session_id=session_id,
+                    text=reply_text,
+                ),
+            )
+
+        if result.get("audio_bytes", 0) > 0 and result.get("audio_data"):
+            for chunk in chunk_bytes(result["audio_data"], 2048):
+                await send_backend_message(
+                    websocket,
+                    BackendMessage(
+                        type="tts_chunk",
+                        session_id=session_id,
+                        payload_b64=base64.b64encode(chunk).decode("ascii"),
+                        sample_rate=24000,
+                    ),
+                )
+        await send_backend_message(
+            websocket,
+            BackendMessage(
+                type="tts_end",
+                session_id=session_id,
+                detail=tts_end_detail,
+                text=reply_text,
+            ),
+        )
+    finally:
+        await round_bridge.finish_session()
+        await round_bridge.close()
 
 
 def resolve_device_context(
@@ -114,6 +258,7 @@ async def forward_audio_session(
     websocket: WebSocket,
     session_id: str,
     live_bridge: DoubaoRealtimeBridge,
+    requester_device_id: str,
 ) -> None:
     reply_text = ""
     try:
@@ -133,6 +278,86 @@ async def forward_audio_session(
                             text=text,
                         ),
                     )
+                    if not is_interim and is_vitals_assessment_query(text):
+                        await send_backend_message(
+                            websocket,
+                            BackendMessage(
+                                type="backend_status",
+                                session_id=session_id,
+                                detail="vitals_query_detected",
+                            ),
+                        )
+                        requested_ms = time.time() * 1000.0
+                        await send_backend_message(
+                            websocket,
+                            BackendMessage(
+                                type="request_fresh_status",
+                                session_id=session_id,
+                                detail="vitals_query",
+                            ),
+                        )
+                        await wait_for_fresh_device_context(
+                            device_id=requester_device_id,
+                            updated_after_ms=requested_ms,
+                        )
+                        fresh_context = resolve_device_context(
+                            requester_device_id=requester_device_id,
+                            local_context={},
+                        )
+                        has_metric = any(
+                            fresh_context.get(k) is not None
+                            for k in ("heart_rate_bpm", "spo2_percent", "temperature_c")
+                        )
+                        if not has_metric:
+                            await send_backend_message(
+                                websocket,
+                                BackendMessage(
+                                    type="backend_status",
+                                    session_id=session_id,
+                                    detail="vitals_query_fallback_live_no_metrics",
+                                ),
+                            )
+                            continue
+
+                        await send_backend_message(
+                            websocket,
+                            BackendMessage(
+                                type="backend_status",
+                                session_id=session_id,
+                                detail="vitals_query_routed_text_round",
+                            ),
+                        )
+                        routed_text_round_sessions.add(session_id)
+                        try:
+                            await live_bridge.finish_session()
+                        except Exception:
+                            pass
+                        try:
+                            await live_bridge.close()
+                        except Exception:
+                            pass
+                        live_bridge = None  # type: ignore[assignment]
+                        try:
+                            await run_text_round_and_stream(
+                                websocket=websocket,
+                                session_id=session_id,
+                                requester_device_id=requester_device_id,
+                                local_context=fresh_context,
+                                query=build_vitals_assessment_query(text),
+                                tts_end_detail="vitals_text_round_tts_done",
+                            )
+                        except Exception as exc:
+                            await send_backend_message(
+                                websocket,
+                                BackendMessage(
+                                    type="error",
+                                    session_id=session_id,
+                                    detail=f"vitals_text_round_error: {exc}",
+                                ),
+                            )
+                        finally:
+                            routed_text_round_sessions.discard(session_id)
+                        break
 
             elif packet.event == 550 and packet.payload_json:
                 content = packet.payload_json.get("content", "")
@@ -182,14 +407,15 @@ async def forward_audio_session(
             ),
         )
     finally:
-        try:
-            await live_bridge.finish_session()
-        except Exception:
-            pass
-        try:
-            await live_bridge.close()
-        except Exception:
-            pass
+        if live_bridge is not None:
+            try:
+                await live_bridge.finish_session()
+            except Exception:
+                pass
+            try:
+                await live_bridge.close()
+            except Exception:
+                pass
 
 
 @app.websocket("/ws/device")
@@ -265,47 +491,14 @@ async def device_socket(websocket: WebSocket) -> None:
                             detail="text_round_start",
                         ),
                     )
-                    await bridge.connect()
-                    try:
-                        await bridge.start_text_session(
-                            resolve_device_context(
-                                requester_device_id=message.device_id,
-                                local_context=device_context,
-                            )
-                        )
-                        result = await bridge.collect_text_round(query=message.text)
-                        await send_backend_message(
-                            websocket,
-                            BackendMessage(
-                                type="reply_text",
-                                session_id=message.session_id,
-                                text=result["reply_text"],
-                                detail="text_round_reply",
-                            ),
-                        )
-
-                        if result["audio_bytes"] > 0 and result.get("audio_data"):
-                            for chunk in chunk_bytes(result["audio_data"], 2048):
-                                await send_backend_message(
-                                    websocket,
-                                    BackendMessage(
-                                        type="tts_chunk",
-                                        session_id=message.session_id,
-                                        payload_b64=base64.b64encode(chunk).decode("ascii"),
-                                        sample_rate=24000,
-                                    ),
-                                )
-                            await send_backend_message(
-                                websocket,
-                                BackendMessage(
-                                    type="tts_end",
-                                    session_id=message.session_id,
-                                    detail="text_round_tts_done",
-                                ),
-                            )
-                    finally:
-                        await bridge.finish_session()
-                        await bridge.close()
+                    await run_text_round_and_stream(
+                        websocket=websocket,
+                        session_id=message.session_id or "",
+                        requester_device_id=message.device_id,
+                        local_context=device_context,
+                        query=message.text,
+                        tts_end_detail="text_round_tts_done",
+                    )
                     continue
 
                 live_bridge = DoubaoRealtimeBridge()
@@ -325,7 +518,12 @@ async def device_socket(websocket: WebSocket) -> None:
                     ),
                 )
                 forward_task = asyncio.create_task(
-                    forward_audio_session(websocket, message.session_id or "", live_bridge)
+                    forward_audio_session(
+                        websocket,
+                        message.session_id or "",
+                        live_bridge,
+                        message.device_id,
+                    )
                 )
                 continue
 
@@ -362,6 +560,16 @@ async def device_socket(websocket: WebSocket) -> None:
                 continue
 
             if message.type == "stop_session":
+                if message.session_id and message.session_id in routed_text_round_sessions:
+                    await send_backend_message(
+                        websocket,
+                        BackendMessage(
+                            type="backend_status",
+                            session_id=message.session_id,
+                            detail="session_stop_ack",
+                        ),
+                    )
+                    continue
                 if forward_task is not None or live_bridge is not None:
                     live_bridge, forward_task = await close_live_session(
                         live_bridge, forward_task
@@ -378,6 +586,9 @@ async def device_socket(websocket: WebSocket) -> None:
 
             if message.type == "device_status":
                 now_ms = time.time() * 1000.0
+                previous_context = latest_device_context_by_device_id.get(
+                    message.device_id, {}
+                )
                 device_context = {
                     "state": message.state,
                     "heart_rate_bpm": message.heart_rate_bpm,
@@ -392,7 +603,20 @@ async def device_socket(websocket: WebSocket) -> None:
                     "temperature_validity": message.temperature_validity,
                     "_updated_at_ms": now_ms,
                 }
+
+                prev_updated_at = previous_context.get("_updated_at_ms")
+                prev_is_fresh = isinstance(prev_updated_at, (int, float)) and (
+                    now_ms - float(prev_updated_at) <= METRIC_HOLD_MS
+                )
+                if prev_is_fresh:
+                    for metric_key in ("heart_rate_bpm", "spo2_percent", "temperature_c"):
+                        if device_context.get(metric_key) is None:
+                            prev_metric = previous_context.get(metric_key)
+                            if prev_metric is not None:
+                                device_context[metric_key] = prev_metric
+
                 latest_device_context_by_device_id[message.device_id] = device_context.copy()
+                context_update_events.setdefault(message.device_id, asyncio.Event()).set()
                 # Keep bounded memory even if many transient device_ids connect over time.
                 if len(latest_device_context_by_device_id) > MAX_DEVICE_CONTEXTS:
                     oldest_device_id = min(

@@ -6,7 +6,7 @@
 #include <Adafruit_GFX.h>
 #include <Adafruit_MLX90614.h>
 #include <Adafruit_SSD1306.h>
-#include "MAX30105.h"
+#include "../drivers/max30105_compat.h"
 
 #include "runtime_constants.h"
 #include "../modules/backend_log.h"

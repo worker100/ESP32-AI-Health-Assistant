@@ -2,7 +2,7 @@
 
 #include <Arduino.h>
 
-#include "MAX30105.h"
+#include "../drivers/max30105_compat.h"
 #include "heartRate.h"
 #include "spo2_algorithm.h"
 

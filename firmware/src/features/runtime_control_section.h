@@ -42,6 +42,32 @@ void refreshSpo2DisplayValue(float candidateSpo2, uint32_t now, float alpha) {
   g_vitals.lastSpo2DisplayRefreshMs = now;
 }
 
+bool selectVisibleHeartRate(float& outBpm) {
+  if (g_vitals.heartRateRealtimeValid) {
+    outBpm = g_vitals.heartRateRealtimeBpm;
+    return true;
+  }
+  if (g_vitals.heartRateDisplayValid) {
+    outBpm = g_vitals.heartRateDisplayBpm;
+    return true;
+  }
+  outBpm = 0.0f;
+  return false;
+}
+
+bool selectVisibleSpo2(float& outPercent) {
+  if (g_vitals.spo2RealtimeValid) {
+    outPercent = g_vitals.spo2RealtimePercent;
+    return true;
+  }
+  if (g_vitals.spo2DisplayValid) {
+    outPercent = g_vitals.spo2DisplayPercent;
+    return true;
+  }
+  outPercent = 0.0f;
+  return false;
+}
+
 void resetMeasurementFilters() {
   g_bufferCount = 0;
   g_newSamplesSinceCalc = 0;
@@ -454,10 +480,8 @@ void renderUi() {
   g_lastUiRefreshMs = now;
 
   ui_module::OledViewModel vm;
-  vm.heartRateValid = g_vitals.heartRateDisplayValid;
-  vm.heartRateBpm = g_vitals.heartRateDisplayBpm;
-  vm.spo2Valid = g_vitals.spo2DisplayValid;
-  vm.spo2Percent = g_vitals.spo2DisplayPercent;
+  vm.heartRateValid = selectVisibleHeartRate(vm.heartRateBpm);
+  vm.spo2Valid = selectVisibleSpo2(vm.spo2Percent);
   vm.temperatureValid = g_temperature.valid;
   vm.temperatureC = g_temperature.objectC;
   vm.fallShort = fallStateUiText(g_fallState);
