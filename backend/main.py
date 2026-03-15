@@ -19,6 +19,7 @@ latest_device_context_by_device_id: dict[str, dict[str, Any]] = {}
 latest_any_device_context: dict[str, Any] = {}
 PRIMARY_HEALTH_DEVICE_ID = "esp32-ai-health-assistant-main"
 CONTEXT_STALE_MS = 3000.0
+MAX_DEVICE_CONTEXTS = 32
 
 
 @app.get("/health")
@@ -392,6 +393,13 @@ async def device_socket(websocket: WebSocket) -> None:
                     "_updated_at_ms": now_ms,
                 }
                 latest_device_context_by_device_id[message.device_id] = device_context.copy()
+                # Keep bounded memory even if many transient device_ids connect over time.
+                if len(latest_device_context_by_device_id) > MAX_DEVICE_CONTEXTS:
+                    oldest_device_id = min(
+                        latest_device_context_by_device_id.items(),
+                        key=lambda item: item[1].get("_updated_at_ms", 0),
+                    )[0]
+                    latest_device_context_by_device_id.pop(oldest_device_id, None)
                 latest_any_device_context.clear()
                 latest_any_device_context.update(device_context)
                 await send_backend_message(

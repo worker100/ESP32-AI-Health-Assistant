@@ -1,6 +1,6 @@
 ﻿# PROJECT MEMORY - ESP32 AI Health Assistant
 
-更新时间：2026-03-10（新 MLX90614 已验通并切回主温度链路）
+更新时间：2026-03-15（结构解耦持续推进，测试代码已独立到 test_apps）
 
 ## 1. 项目定位（Project Scope）
 - 项目名：ESP32 AI Health Assistant（基于 ESP32-S3 的 AI 智能健康助手系统）
@@ -22,6 +22,18 @@
   - 串口温度来源标识：`TempSrc=MAX30102_DIE / MLX90614 / NONE`
   - UI 刷新周期约 `250ms`
 - 显示优先级：稳定 Heart Rate/SpO2 的同时补充 Temperature
+
+## 2.1 代码结构状态（2026-03-15）
+- 主固件主线：
+  - `firmware/src/main.cpp`
+  - `firmware/src/modules/`（UI、命令解析、后端日志）
+  - `firmware/src/features/`（已抽离：backend codec、telemetry）
+- 测试程序：
+  - 已从 `firmware/src/` 迁移至 `firmware/test_apps/`
+  - 由 PlatformIO 多环境按需单独编译，不再与主固件源码混杂
+- 现阶段原则：
+  - 先做“行为等价”的结构解耦，再做算法层增强
+  - 保障可编译、可下载、可串口验证连续可用
 
 ## 3. 主控与开发板（Main Board）
 - 开发板：YD-ESP32-S3-COREBOARD V1.4
@@ -953,3 +965,42 @@
   1. 固化对照测试流程并产出误差统计文档；
   2. 完成电池供电链路实装与续航记录；
   3. 整理最终验收文档（可直接用于答辩展示）。
+
+## 51. 2026-03-15 模块实现标准化收口（Mainline h/cpp Normalization）
+- 本次目标：
+  - 将主程序中 `section` 形式的实现改为标准化模块入口（`*.h + *.cpp`），在保持行为等价的前提下提升可维护性。
+- 已完成：
+  - 新增模块头文件：
+    - `firmware/src/features/runtime_control.h`
+    - `firmware/src/features/device_audio.h`
+    - `firmware/src/features/health_pipeline.h`
+    - `firmware/src/features/backend_bridge.h`
+  - 新增模块实现文件：
+    - `firmware/src/features/runtime_control.cpp`
+    - `firmware/src/features/device_audio.cpp`
+    - `firmware/src/features/health_pipeline.cpp`
+    - `firmware/src/features/backend_bridge.cpp`
+  - `main.cpp` 收敛为编排层（setup/loop 调度）
+  - `display/max30102/mlx90614` 设备对象统一放入 `core/app_state.cpp` 进行全局状态管理
+- 验证结果：
+  - 主固件与全部测试环境共 8 个 env 编译通过。
+- 备注：
+  - 仍存在 SparkFun MAX3010x 的 `I2C_BUFFER_LENGTH` 重定义编译警告，该警告已确认不影响运行。
+
+## 52. 2026-03-15 AI 上下文可见性与 OLED 显示修复（Voice Context + UI）
+- 问题现象：
+  - 语音轮次中偶发出现“AI 说看不到当前数值”，即使屏幕/串口已有 HR/SpO2/温度显示。
+  - OLED 跌倒状态区域在部分状态文案下出现文字重叠，影响可读性。
+- 根因定位：
+  - 体征上下文构建与上报链路存在“可见性门控”耦合，弱信号场景下可能导致 AI 会话拿到空字段。
+  - 右下角跌倒状态区在字体与布局组合下超出安全绘制区域。
+- 已完成修复：
+  - 固件侧保留 `display values` 上报给 backend，由
+    `measurement_confidence/temperature_validity` 负责“是否可靠”语义提示。
+  - OLED 跌倒区改为更紧凑的布局策略，避免状态文本重叠。
+  - 同步补充关键中文注释（术语保留英文关键词）以便后续论文与维护。
+- 验证结果：
+  - 主固件与测试固件共 `8` 个 PlatformIO env 编译通过。
+  - 语音轮次可正常完成 `start_session -> stream -> stop -> tts_end`。
+- 现阶段结论：
+  - 当前版本已具备毕业设计演示与论文撰写基础；后续以“算法精度统计与对照实验报告”作为增量优化主线。

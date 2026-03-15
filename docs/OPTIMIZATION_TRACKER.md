@@ -1,6 +1,6 @@
 # ESP32 AI Health Assistant Optimization Tracker
 
-Updated: 2026-03-14  
+Updated: 2026-03-15  
 Rule: finish one item -> mark `[x]` immediately -> append one line to completion log.
 
 ## 1. Objectives
@@ -68,7 +68,15 @@ Rule: finish one item -> mark `[x]` immediately -> append one line to completion
 - [x] I3. Formal main config entry moved to `firmware/include/project_config.h`
 - [x] I4. Serial runtime volume command (`VOL LOW/MED/HIGH`)
 
+### J. Codebase structure decoupling
+- [x] J1. Move all test apps from `firmware/src` to `firmware/test_apps`
+- [x] J2. Update PlatformIO env source filters to isolate main firmware and test apps
+- [x] J3. Split backend codec and telemetry logging into `src/features`
+- [x] J4. Keep main behavior equivalent while reducing inline logging/codec logic in `main.cpp`
+
 ## 3. Completion Log (newest first)
+- 2026-03-15: Completed voice-context visibility and OLED overlap fixes (keep display values in `AiHealthContextSnapshot` upload path, keep confidence/validity risk labels, compact FALL area rendering), and re-verified all 8 PlatformIO env builds.
+- 2026-03-15: Completed `J1/J2/J3/J4` (test code isolated into `test_apps`; env filters updated; telemetry + backend base64 codec extracted to `src/features`; main firmware behavior preserved and all env builds passed).
 - 2026-03-14: Completed P0-v1 HR/SpO2 fusion upgrade (motion-aware gating, recent algo-HR agreement check for beat path, fallback SpO2 throttling, and adaptive smoothing to balance realtime feel with stability).
 - 2026-03-14: Completed `G3/I4` (OLED now shows compact voice state alongside guidance; serial runtime volume commands `VOL LOW|MED|HIGH|?` added and bound to backend TTS playback gain).
 - 2026-03-14: Started P0 measurement stability tuning (MAX30102 `sampleAverage 4->8`, `adcRange 4096->8192`) to reduce jitter and clipping before algorithm-structure changes.
@@ -95,3 +103,4 @@ Rule: finish one item -> mark `[x]` immediately -> append one line to completion
 4. Fall test (`TEST`): table-drop should trigger full `FREEFALL->IMPACT->ALERT`.
 5. Voice test (quiet + noisy): `VOICE_WAKE` events stable, no high-frequency chatter.
 6. Recovery test: disconnect/reconnect one sensor path and verify re-init + resumed output.
+- 2026-03-15: Completed structural normalization pass (converted `section`-style mainline implementation into standard `*.h + *.cpp` modules for `runtime_control / device_audio / health_pipeline / backend_bridge`; `main.cpp` reduced to orchestration-only and full 8-env build regression passed).

@@ -6,7 +6,7 @@
 #include <mbedtls/base64.h>
 
 #include "project_config.h"
-#include "voice_backend_test_config.h"
+#include "config/voice_backend_test_config.h"
 
 using namespace websockets;
 

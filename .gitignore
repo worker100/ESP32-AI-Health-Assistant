@@ -6,6 +6,7 @@ firmware/.vscode/
 backend/.env
 backend/__pycache__/
 backend/*.pcm
+firmware/include/config/project_local.h
 
 # OS
 Thumbs.db

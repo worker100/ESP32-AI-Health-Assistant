@@ -1,6 +1,6 @@
 ﻿# FIRMWARE TEST MEMORY - ESP32 AI Health Assistant
 
-更新时间：2026-03-08（MPU6050 + MAX98357 跌倒报警测试已打通）
+更新时间：2026-03-15（测试程序已迁移到 test_apps，与主固件源码分离）
 
 ## 1. 作用范围
 - 本文件只记录 `firmware` 目录下的独立测试环境。
@@ -15,6 +15,21 @@
   - `mlx90614-oled-test`
   - `mpu6050-oled-test`
   - `max98357-speaker-test`
+  - `mlx90614-quick-test`
+  - `inmp441-i2s-test`
+  - `voice-backend-text-test`
+  - `voice-backend-live-test`
+
+## 2.1 目录隔离（2026-03-15 起）
+- 所有测试程序已从 `src/` 迁移到 `test_apps/`：
+  - `inmp441_i2s_test.cpp`
+  - `max98357_speaker_test.cpp`
+  - `mlx90614_oled_test.cpp`
+  - `mlx90614_quick_test.cpp`
+  - `mpu6050_oled_test.cpp`
+  - `voice_backend_text_test.cpp`
+  - `voice_backend_live_test.cpp`
+- `platformio.ini` 中各测试 env 已改为从 `test_apps/` 编译，避免与主固件混编。
 
 ## 3. 固定硬件基础
 - 开发板：ESP32-S3（PlatformIO board: `esp32-s3-devkitc-1`）
@@ -29,7 +44,7 @@
 
 ## 4. MLX90614 测试环境（`mlx90614-oled-test`）
 - 入口文件：
-  - `src/mlx90614_oled_test.cpp`
+  - `test_apps/mlx90614_oled_test.cpp`
 - 用途：
   - 只测试 `GY-906(MLX90614) + OLED`
   - 不改主程序
@@ -45,7 +60,7 @@
 
 ## 5. MPU6050 测试环境（`mpu6050-oled-test`）
 - 入口文件：
-  - `src/mpu6050_oled_test.cpp`
+  - `test_apps/mpu6050_oled_test.cpp`
 - 用途：
   - 测试 `MPU6050 + OLED + MAX98357A`
   - 在独立环境里验证跌倒检测和本地报警
@@ -98,7 +113,7 @@
 ## 7. 喇叭报警策略（当前测试版）
 - 独立喇叭测试环境：
   - `max98357-speaker-test`
-  - 入口：`src/max98357_speaker_test.cpp`
+- 入口：`test_apps/max98357_speaker_test.cpp`
 - 当前 `mpu6050-oled-test` 中已融合报警音
 - 报警策略：
   - 先连续报警约 `12 秒`

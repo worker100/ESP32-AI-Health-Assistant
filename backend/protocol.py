@@ -56,6 +56,22 @@ HEADER = bytes([0x11, 0x00, 0x10, 0x00])
 FLAG_EVENT_PRESENT = 0x4
 
 
+def _read_u32(data: bytes, offset: int, label: str) -> tuple[int, int]:
+    if offset + 4 > len(data):
+        raise ValueError(f"Packet too short while reading {label}")
+    value = struct.unpack(">I", data[offset : offset + 4])[0]
+    return value, offset + 4
+
+
+def _read_bytes(data: bytes, offset: int, size: int, label: str) -> tuple[bytes, int]:
+    if size < 0:
+        raise ValueError(f"Invalid negative size for {label}")
+    end = offset + size
+    if end > len(data):
+        raise ValueError(f"Packet too short while reading {label} payload")
+    return data[offset:end], end
+
+
 @dataclass
 class ParsedPacket:
     message_type: int
@@ -160,12 +176,10 @@ def parse_packet(data: bytes) -> ParsedPacket:
     session_id = None
 
     if message_type == MessageType.ERROR_INFORMATION:
-        code = struct.unpack(">I", data[offset : offset + 4])[0]
-        offset += 4
+        code, offset = _read_u32(data, offset, "error code")
 
     if flags & FLAG_EVENT_PRESENT:
-        event = struct.unpack(">I", data[offset : offset + 4])[0]
-        offset += 4
+        event, offset = _read_u32(data, offset, "event id")
 
     if event not in {
         EventId.START_CONNECTION,
@@ -175,15 +189,13 @@ def parse_packet(data: bytes) -> ParsedPacket:
         EventId.CONNECTION_FINISHED,
         None,
     }:
-        session_size = struct.unpack(">I", data[offset : offset + 4])[0]
-        offset += 4
+        session_size, offset = _read_u32(data, offset, "session id size")
         if session_size > 0:
-            session_id = data[offset : offset + session_size].decode("utf-8")
-            offset += session_size
+            session_raw, offset = _read_bytes(data, offset, session_size, "session id")
+            session_id = session_raw.decode("utf-8")
 
-    payload_size = struct.unpack(">I", data[offset : offset + 4])[0]
-    offset += 4
-    payload = data[offset : offset + payload_size]
+    payload_size, offset = _read_u32(data, offset, "payload size")
+    payload, offset = _read_bytes(data, offset, payload_size, "payload")
 
     payload_json = None
     if serialization == Serialization.JSON and payload:

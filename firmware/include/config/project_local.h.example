@@ -1,0 +1,35 @@
+#pragma once
+
+// 复制本文件为：firmware/include/config/project_local.h
+// 然后按需修改本地参数。
+//
+// 重要说明（IMPORTANT）：
+// - project_local.h 只保留本地，不要提交到仓库。
+// - 除非必须，建议使用 ASCII 文本，避免编码问题。
+//
+// 常见需求：
+// - 改默认音量：设置 AI_HEALTH_SPEAKER_PRESET
+// - 精调三档增益：设置 AI_HEALTH_SPK_GAIN_LOW/MEDIUM/HIGH
+
+// #define AI_HEALTH_WIFI_SSID "YOUR_WIFI_SSID"
+// #define AI_HEALTH_WIFI_PASSWORD "YOUR_WIFI_PASSWORD"
+// #define AI_HEALTH_BACKEND_HOST "192.168.1.100"
+// #define AI_HEALTH_BACKEND_PORT 8787
+// #define AI_HEALTH_BACKEND_PATH "/ws/device"
+// #define AI_HEALTH_BACKEND_BRIDGE_DEFAULT_ENABLED 1
+
+// Speaker preset：0=Low，1=Medium，2=High
+// 例如：默认 Medium
+// #define AI_HEALTH_SPEAKER_PRESET 1
+// #define AI_HEALTH_SPEAKER_PRESET 0
+// #define AI_HEALTH_SPK_GAIN_LOW 0.55f
+// #define AI_HEALTH_SPK_GAIN_MEDIUM 1.25f
+// #define AI_HEALTH_SPK_GAIN_HIGH 1.65f
+
+// #define AI_HEALTH_BACKEND_STATUS_PUSH_MS 800
+// #define AI_HEALTH_BACKEND_RETRY_MS 5000
+// #define AI_HEALTH_BACKEND_WIFI_TIMEOUT_MS 20000
+// #define AI_HEALTH_BACKEND_INTERRUPT_ON_FACTOR 3.4f
+// #define AI_HEALTH_BACKEND_INTERRUPT_MIN_RMS 0.015f
+// #define AI_HEALTH_BACKEND_INTERRUPT_TRIGGER_FRAMES 2
+// #define AI_HEALTH_BACKEND_TAIL_STREAM_MS 350
